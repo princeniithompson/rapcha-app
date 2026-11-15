@@ -13,7 +13,9 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class ForegroundAppPickerTest {
 
-    private fun sensitive(pkg: String) = SafeModeClassifier.isSensitiveApp(null, pkg)
+    /** v25: Safe Mode is gone, so no package is treated as sensitive. */
+    @Suppress("UNUSED_PARAMETER")
+    private fun sensitive(pkg: String) = false
 
     private fun ignored(pkg: String): Boolean {
         val lower = pkg.lowercase()
@@ -23,7 +25,7 @@ class ForegroundAppPickerTest {
     }
 
     @Test
-    fun `a banking window stays in front of voiceflow and the launcher`() {
+    fun `v25 no Safe Mode - the active app wins over a background bank, ime and rapcha are ignored`() {
         val windows = listOf(
             ForegroundAppPicker.AppWindow("com.omkar.voiceflow", active = true, focused = true),
             ForegroundAppPicker.AppWindow("com.google.android.apps.nexuslauncher", active = true),
@@ -32,11 +34,11 @@ class ForegroundAppPickerTest {
             ForegroundAppPicker.AppWindow("com.princeniithompson.rapcha", active = true)
         )
         assertEquals(
-            "com.sportybet.android.gp.gh",
+            "com.omkar.voiceflow",
             ForegroundAppPicker.pick(windows, ::ignored, ::sensitive)
         )
         assertEquals(
-            "com.sportybet.android.gp.gh",
+            "com.omkar.voiceflow",
             ForegroundAppPicker.resolve(
                 windows = windows,
                 eventPackage = "com.omkar.voiceflow",
@@ -48,13 +50,13 @@ class ForegroundAppPickerTest {
     }
 
     @Test
-    fun `mtn and gcb win before safe mode is already held`() {
+    fun `v25 no Safe Mode - the active app is picked and the launcher only loses to a real app`() {
         val mtn = listOf(
             ForegroundAppPicker.AppWindow("com.omkar.voiceflow", active = true, focused = true),
             ForegroundAppPicker.AppWindow("com.mtngh.mymtn")
         )
         assertEquals(
-            "com.mtngh.mymtn",
+            "com.omkar.voiceflow",
             ForegroundAppPicker.pick(mtn, ::ignored, ::sensitive)
         )
         val gcb = listOf(
@@ -82,8 +84,9 @@ class ForegroundAppPickerTest {
     }
 
     @Test
-    fun `a voiceflow event with no windows does not clear a held bank`() {
-        assertNull(
+    fun `v25 no Safe Mode - with no windows the event package is used`() {
+        assertEquals(
+            "com.omkar.voiceflow",
             ForegroundAppPicker.resolve(
                 windows = emptyList(),
                 eventPackage = "com.omkar.voiceflow",
@@ -128,29 +131,5 @@ class ForegroundAppPickerTest {
             "com.modefin.gcbui",
             ForegroundAppPicker.pick(windows, { imes.contains(it.lowercase()) || ignored(it) }, ::sensitive)
         )
-    }
-
-    @Test
-    fun `a cutoff copies and a normal complete with a field injects`() {
-        assertEquals(
-            SessionPlacement.Path.CLIPBOARD,
-            SessionPlacement.forFinishedSession(fieldFocused = true, cutOffBeforeComplete = true)
-        )
-        assertEquals(
-            SessionPlacement.Path.CLIPBOARD,
-            SessionPlacement.forFinishedSession(fieldFocused = false, cutOffBeforeComplete = false)
-        )
-        assertEquals(
-            SessionPlacement.Path.INJECT,
-            SessionPlacement.forFinishedSession(fieldFocused = true, cutOffBeforeComplete = false)
-        )
-        val bank = SafeModeClassifier.classify(packageName = "com.sportybet.android.gp.gh")
-        assertTrue(SessionPlacement.holdsImmediately(bank))
-        val password = SafeModeClassifier.classify(
-            packageName = "com.android.settings",
-            focused = SafeModeClassifier.FieldSignal(isPassword = true, editable = true, packageName = "com.android.settings")
-        )
-        assertTrue(password.sensitive)
-        assertFalse(SessionPlacement.holdsImmediately(password))
     }
 }

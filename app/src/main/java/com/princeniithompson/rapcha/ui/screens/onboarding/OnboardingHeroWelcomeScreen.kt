@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -417,7 +418,7 @@ fun OnboardingHeroWelcomeScreen(
                 modifier = Modifier
                     .widthIn(max = 460.dp)
                     .fillMaxWidth()
-                    .height(54.dp)
+                    .heightIn(min = 54.dp)
                     .testTag("btn_hero_get_started")
             ) {
                 Text(

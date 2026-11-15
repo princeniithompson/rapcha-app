@@ -2,20 +2,51 @@
 
 ![Lifesaver](docs/assets/lifesaver-icon.png)
 
-Rapcha is an Android voice keyboard and floating dictation bubble. You talk, it transcribes, it can polish the text with Gemini, and it types the result into the app in front of you.
+Rapcha is an Android floating dictation bubble. You tap the bubble, speak, and Rapcha types what you said into the text field in front of you.
 
 ![Rapcha floating dictation](docs/assets/rapcha-hero.png)
 
-**Current version:** 24 (`lite-24`), package `com.princeniithompson.rapcha`. Not on the Play Store yet.
+**Current version:** 25 (`lean-25`), package `com.princeniithompson.rapcha`. Not on the Play Store yet. Runs on Android 7.0+ (minSdk 24) and is tested for Android 11 (API 30) phones such as the Infinix Hot 11.
 
 ## What it does
 
-- A floating bubble sits over other apps. Tap it, speak, and Rapcha types into the focused field.
-- It can also run as a voice keyboard (input method).
-- On ordinary phones the polish path has three steps: the raw transcript, then Gemini 3.5 Smart, then Lyra on Gemini 3.8 Live — and only when the target is an AI app. Chef stays in the system instruction; Lyra is the user instruction.
-- **Lite mode** is for weak phones (low RAM, budget chips, or a slow CPU). In Lite, Rapcha only records, runs Smart polish, types the text, and finishes. It does not run app detection, Live/Lyra, or extra chrome. You can force Lite on or off in settings; Auto turns it on when the device looks weak.
-- Smart Safe Mode can hide the bubble on banking and password screens.
-- The Gemini API key is entered by the user in the app (onboarding or settings). It is stored in an on-device encrypted vault. No key is embedded in this repository or in the APK.
+v25 is the lean build. There is one path:
+
+1. Tap the floating bubble.
+2. The microphone records 16 kHz mono audio.
+3. The audio goes over one WebSocket to Gemini Live (`gemini-3.5-transcribe-live`, Smart mode).
+4. Tap Complete. The text is typed into the focused field.
+
+How the text is typed, in this order:
+
+1. Accessibility `commitText` (Android 13+).
+2. The Rapcha companion keyboard.
+3. Accessibility `ACTION_SET_TEXT`.
+4. If no text field can be found at all, the text is copied to the clipboard.
+
+Soft speech: the app adds light, adaptive gain with a soft limiter to the audio it sends. This lets one or two quiet words be heard without shouting. The phone's own noise suppression and auto-gain are switched off, because they tend to remove quiet speech.
+
+The bubble shows in every app, including banking apps. There is no Safe Mode.
+
+Settings has the Gemini API key, the Welcome Tour, Custom Vocabulary, Keep Rapcha Awake, the Floating Voice Ring switch, and the Draw Over Other Apps and Keyboard & Field Detector permissions.
+
+Text scales with the system font size, and the screens scroll. The floating bubble keeps a fixed size so it stays on screen.
+
+The Gemini API key is entered by the user in the app (onboarding or settings). It is stored in an on-device encrypted vault. No key is embedded in this repository or in the APK.
+
+### Removed in v25
+
+- Polish (Smart, Lyra and three-step)
+- App detection
+- Safe Mode
+- Lite mode and the render budget
+- Recording glows and the Words bubble
+- Retry recordings
+- History and recordings
+- Vocabulary learning
+- Haptics and vibration
+- Release logging (logs are stripped by R8)
+- Firebase and Retrofit
 
 ## Repository layout
 
@@ -24,25 +55,22 @@ app/                  Android app module
   src/main/
     AndroidManifest.xml
     java/com/princeniithompson/rapcha/
-      RapchaApplication.kt   Process start; decides Lite mode before heavy work
+      RapchaApplication.kt   Process start, legacy data cleanup
       MainActivity.kt        Hosts the in-app screens
-      audio/                 Microphone capture and filter-bank helpers
-      config/                RapchaConfig.kt — models, timeouts, shared constants
-      core/                  API key vault, key resolution, Lite mode
-      data/                  History, vocabulary, logs, retry clips, English lexicon
-      diagnostics/           Crash reports, bubble health, network/device info
-      service/               Bubble, accessibility, keyboard, app detection, safe mode
-        floating/            Dictation session, Smart/Lyra polish, text injection, overlay
+      audio/                 AudioRecorder (mic thread) and SpeechGain (soft-speech gain + limiter)
+      core/                  API key vault and Gemini endpoints
+      data/                  Custom vocabulary, onboarding state, legacy cleanup
+      diagnostics/           Bubble health counters
+      service/               Bubble service, accessibility service, companion keyboard, recovery
+        floating/            Dictation session, ordered audio sender, text injection, overlay
       ui/                    Jetpack Compose screens and bubble UI
         screens/onboarding/  First-run permissions and Gemini key setup
-      util/                  App name / package resolution
       websocket/             Gemini Live WebSocket client and transcript handling
-    res/                     Drawables, layouts, strings, font, accessibility and IME XML
-    assets/scowl/            English word list used by vocabulary features
+    res/                     Drawables, strings, font, accessibility and IME XML
     baseline-prof.txt        Baseline profile for release startup
-  src/test/                  Unit tests (no device required)
+  src/test/                  Unit tests and font-scale screenshots (no device required)
   build.gradle.kts           App version, SDK levels, signing hooks, dependencies
-  proguard-rules.pro         R8 rules for release
+  proguard-rules.pro         R8 rules for release (strips logging)
 docs/                        Engineering notes and README images
 gradle/                      Version catalog and Gradle wrapper
 build.gradle.kts             Root plugins
@@ -54,10 +82,10 @@ metadata.json                Google AI Studio project metadata
 
 Useful files if you are changing behaviour:
 
-- Three-step / Smart / Lyra policy: `service/floating/` (`FloatingPolishCoordinator.kt`, `LyraPolishInstruction.kt`, `Stage2LivePolish.kt`) and `config/RapchaConfig.kt`
-- Lite mode: `core/LiteMode.kt` and `service/floating/RenderBudget.kt`
-- Typing into other apps: `service/floating/FloatingTextInjector.kt`, `service/RapchaAccessibilityService.kt`, `service/RapchaInputMethodService.kt`
-- Live transcription socket: `websocket/GeminiLiveWebSocketClient.kt`
+- Typing into other apps (critical, keep the order): `service/floating/FloatingTextInjector.kt`, `service/floating/RapchaTextInserter.kt`, `service/RapchaAccessibilityService.kt`, `service/RapchaInputMethodService.kt`
+- Microphone and soft speech: `audio/AudioRecorder.kt`, `audio/SpeechGain.kt`, `websocket/TranscriptAcceptance.kt`
+- Live transcription socket and system prompt: `websocket/GeminiLiveWebSocketClient.kt`
+- Session flow (start, Complete, cancel): `service/floating/FloatingDictationSessionManager.kt`, `service/FloatingBubbleService.kt`
 - API key: `core/ApiKeyVault.kt`, `core/ApiConfig.kt`
 
 ## How to build
@@ -90,7 +118,7 @@ Release builds are minified with R8 and resource shrinking. Signing is **not** i
 - `KEYSTORE_PATH` — path to your `.jks` / `.keystore` file
 - `STORE_PASSWORD`
 - `KEY_PASSWORD`
-- `KEY_ALIAS` — optional, defaults to `upload`
+- `KEY_ALIAS` — optional, defaults to `upload` (the Rapcha release key uses `rapcha`)
 
 Keep the keystore, `keystore.properties`, `store.pass`, and `.env` on your machine only. They are listed in `.gitignore`.
 
@@ -108,11 +136,11 @@ Tests may use obvious fakes, or `AQ.FakeUnitTestKeyNotReal000000000000000000000`
 
 ## Notes for AI agents (Google AI Studio and others)
 
-- This repository is the clean v24 starting point. Do not pull history or files from the older `princeniithompson/Vs` repo unless the owner asks.
+- This repository is the clean v25 lean tree. Do not pull history or files from the older `princeniithompson/Vs` repo unless the owner asks.
 - Do not commit secrets, keystores, `local.properties`, `.env`, APKs, or AI Studio screenshot dumps.
-- Do not change the Chef system instruction or the Lyra user instruction unless the owner explicitly asks. Chef belongs only in the system instruction.
-- On normal phones, keep the three-step path: raw text, then Gemini 3.5 Smart, then Lyra on Gemini 3.8 Live for AI apps only.
-- Lite mode must stay a thin path: talk, Smart polish, inject, finish.
+- **Do not change text injection behaviour.** Keep the order: P1 `commitText` (API 33+), P2 companion keyboard, P3 `ACTION_SET_TEXT`, then the clipboard only when there is no target field. `InjectionChainVerificationTest` guards this.
+- Keep the single path: bubble, mic, one Live WebSocket, inject. Do not bring back polish, app detection, Safe Mode, or history without the owner asking.
+- Do not hardcode heights for text. Use `heightIn` and scrolling so large system fonts wrap.
 - Prefer small, focused diffs. Run `./gradlew test` and `./gradlew assembleDebug` after behaviour changes when you can.
 - The application id and namespace are `com.princeniithompson.rapcha`.
 

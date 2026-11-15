@@ -217,11 +217,5 @@ class InterimPreviewMonitor(
         }
 
         fun silencePcm(sampleCount: Int = 160): ByteArray = ByteArray(sampleCount * 2)
-
-        fun polishingMessage(durationSeconds: Int): String {
-            val minutes = ((durationSeconds.coerceAtLeast(0) + 59) / 60).coerceAtLeast(1)
-            val unit = if (minutes == 1) "minute" else "minutes"
-            return "Polishing $minutes $unit of speech..."
-        }
     }
 }

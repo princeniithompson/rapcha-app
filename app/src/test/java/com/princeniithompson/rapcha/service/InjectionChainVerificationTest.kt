@@ -6,7 +6,6 @@ import android.content.Context
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 import com.princeniithompson.rapcha.data.InjectionEvent
-import com.princeniithompson.rapcha.data.InjectionLogRepository
 import com.princeniithompson.rapcha.service.FloatingBubbleManager
 import com.princeniithompson.rapcha.service.floating.FloatingOverlayWindowManager
 import com.princeniithompson.rapcha.service.floating.FloatingTextInjector
@@ -29,19 +28,15 @@ class InjectionChainVerificationTest {
     @Before
     fun setUp() {
         service = org.robolectric.Robolectric.buildService(RapchaAccessibilityService::class.java).create().get()
-        FloatingBubbleManager.updateCurrentForegroundPackage("com.google.android.keep", null)
         FloatingBubbleManager.resetClipboardFallbackIndicator()
     }
 
     @Test
-    fun `injectText blocks completely when Smart Safe Mode is active`() {
-        FloatingBubbleManager.updateCurrentForegroundPackage("com.chase.sig.android", null)
-        try {
-            val injected = kotlinx.coroutines.runBlocking { service.injectText("Secret Password 123") }
-            assertFalse("Injection must be blocked by Smart Safe Mode", injected)
-        } finally {
-            FloatingBubbleManager.updateCurrentForegroundPackage("com.google.android.keep", null)
-        }
+    fun `v25 has no Safe Mode block and reports NO_TARGET_NODE when nothing is focused`() {
+        val event = kotlinx.coroutines.runBlocking { service.injectTextDetailed("Secret Password 123") }
+        assertTrue(event.injectionMethod != "BLOCKED_SAFE_MODE")
+        assertEquals("NO_TARGET_NODE", event.injectionMethod)
+        assertEquals("FAILED", event.finalOutcome)
     }
 
     @Test
@@ -102,38 +97,6 @@ class InjectionChainVerificationTest {
         composeNode.isEditable = false
         composeNode.className = "androidx.compose.ui.text.input.ComposeEditableText"
         assertTrue(FloatingTextInjector.isNodeAcceptingText(composeNode))
-    }
-
-    @Test
-    fun `InjectionLogRepository records and formats direct injection diagnostic events`() {
-        InjectionLogRepository.clearLogs()
-        val event = InjectionEvent(
-            targetPackage = "com.android.chrome",
-            targetAppName = "Chrome",
-            targetNodeClass = "android.webkit.WebView",
-            isFocused = true,
-            isEditable = true,
-            windowId = 10,
-            textLength = 25,
-            wordCount = 4,
-            injectionMethod = "DIRECT_ACTION_SET_TEXT",
-            resultDetails = "SUCCESS: Direct ACTION_SET_TEXT performed",
-            finalOutcome = "SUCCESS",
-            durationMs = 18L,
-            rawTextPreview = "Testing text injection"
-        )
-        InjectionLogRepository.logInjection(event)
-
-        val recorded = InjectionLogRepository.logs.value
-        assertEquals(1, recorded.size)
-        assertEquals("com.android.chrome", recorded[0].targetPackage)
-        assertEquals("SUCCESS", recorded[0].finalOutcome)
-        assertEquals("DIRECT_ACTION_SET_TEXT", recorded[0].injectionMethod)
-
-        val report = InjectionLogRepository.exportAsFormattedText()
-        assertTrue(report.contains("RAPCHA TEXT INJECTION DIAGNOSTIC REPORT"))
-        assertTrue(report.contains("Chrome (com.android.chrome)"))
-        assertTrue(report.contains("DIRECT_ACTION_SET_TEXT"))
     }
 
     @Test
@@ -657,6 +620,72 @@ class InjectionChainVerificationTest {
         } finally {
             RapchaAccessibilityService.instance = service
         }
+    }
+
+    @Test
+    fun `a failed P2 companion commit does not fall through to the clipboard or P3`() = kotlinx.coroutines.runBlocking {
+        val context = RuntimeEnvironment.getApplication()
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Initial", "User clip"))
+
+        val probe = org.robolectric.Robolectric.buildService(PriorityProbeService::class.java).create().get()
+        probe.p1Result = null
+        probe.p2Result = false
+        try {
+            val event = probe.injectTextDetailed("Should stay off the clipboard")
+            assertEquals("FAILED", event.finalOutcome)
+            assertEquals("COMPANION_IME", event.injectionMethod)
+            assertTrue(probe.p2Called)
+            assertEquals("User clip", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+        } finally {
+            RapchaAccessibilityService.instance = service
+        }
+    }
+
+    @Test
+    fun `v25 Complete path - P1 success through the inserter reports SuccessDirect and keeps the clipboard`() = kotlinx.coroutines.runBlocking {
+        val context = RuntimeEnvironment.getApplication()
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Initial", "User clip"))
+
+        val probe = org.robolectric.Robolectric.buildService(PriorityProbeService::class.java).create().get()
+        probe.p1Result = true
+        RapchaAccessibilityService.instance = probe
+        try {
+            val placed = FloatingTextInjector.injectReporting(context, "two words")
+            assertTrue(placed is com.princeniithompson.rapcha.service.floating.RapchaTextInserter.InsertionResult.SuccessDirect)
+            assertEquals("User clip", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+            assertFalse(FloatingBubbleManager.isClipboardFallbackIndicator.value)
+        } finally {
+            RapchaAccessibilityService.instance = service
+        }
+    }
+
+    @Test
+    fun `v25 Complete path - no target at all copies to the clipboard`() = kotlinx.coroutines.runBlocking {
+        val context = RuntimeEnvironment.getApplication()
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Initial", "User clip"))
+
+        val probe = org.robolectric.Robolectric.buildService(PriorityProbeService::class.java).create().get()
+        probe.p1Result = null
+        probe.p2Result = null
+        RapchaAccessibilityService.instance = probe
+        try {
+            val placed = FloatingTextInjector.injectReporting(context, "copied words")
+            assertTrue(placed is com.princeniithompson.rapcha.service.floating.RapchaTextInserter.InsertionResult.SuccessClipboardFallback)
+            assertEquals("copied words", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+        } finally {
+            RapchaAccessibilityService.instance = service
+            FloatingBubbleManager.resetClipboardFallbackIndicator()
+        }
+    }
+
+    @Test
+    fun `v25 Complete path - blank text is never injected`() = kotlinx.coroutines.runBlocking {
+        val context = RuntimeEnvironment.getApplication()
+        val placed = FloatingTextInjector.injectReporting(context, "   ")
+        assertTrue(placed is com.princeniithompson.rapcha.service.floating.RapchaTextInserter.InsertionResult.Failed)
     }
 }
 

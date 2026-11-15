@@ -1,5 +1,6 @@
 package com.princeniithompson.rapcha.service
 
+import androidx.annotation.RequiresApi
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.KeyguardManager
@@ -18,7 +19,6 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
-import com.princeniithompson.rapcha.data.AppLogRepository
 import com.princeniithompson.rapcha.data.DiagnosticSource
 import com.princeniithompson.rapcha.data.DiagnosticType
 import com.princeniithompson.rapcha.diagnostics.BubbleHealthLog
@@ -34,6 +34,12 @@ open class RapchaAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "RapchaAccessService"
+        /**
+         * v24 fell back to the locked session label (never a real package) when no foreground
+         * package was known, which made the window search prefer the focused/active window.
+         * This sentinel keeps that exact behaviour without the session label.
+         */
+        private const val NO_ACTIVE_PACKAGE = "<no-active-package>"
         const val VERIFICATION_ATTEMPTS = 2
         const val VERIFY_WAIT_MS = 150L
         /** Verification may poll, but a slow read must not be treated as a failed insert. */
@@ -142,21 +148,6 @@ open class RapchaAccessibilityService : AccessibilityService() {
     var lastSeenClassName: String? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val contextExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "rapcha-foreground").apply { isDaemon = true }
-    }
-    private val contextScheduler = ForegroundContextScheduler(
-        postDelayed = { runnable, delayMs -> mainHandler.postDelayed(runnable, delayMs) },
-        cancel = { runnable -> mainHandler.removeCallbacks(runnable) },
-        execute = { runnable -> contextExecutor.execute(runnable) },
-        publishOnMain = { runnable -> mainHandler.post(runnable) },
-        evaluate = { packageName, className, windowTitle ->
-            evaluateForeground(packageName, className, windowTitle)
-        }
-    ).also { scheduler ->
-        scheduler.onResult = { packageName, evaluation -> publishForeground(packageName, evaluation) }
-    }
-
     private val keyboardSettle = KeyboardSettleStateMachine()
     private val evalLock = Any()
     private val evalQueued = AtomicBoolean(false)
@@ -177,29 +168,18 @@ open class RapchaAccessibilityService : AccessibilityService() {
 
     private var receiversRegistered = false
 
-    private var stallProbePostedAt = 0L
     private var screenInteractive = true
-    private val packageLabelCache = ConcurrentHashMap<String, String>()
+
+    /** Last non-system app in front (only used to scope the injection target search). */
+    @Volatile
+    private var lastForegroundPackage: String? = null
     @Volatile
     private var lastImeWindowPresent = false
-    private val stallProbe = Runnable {
-        val lateBy = MainThreadStall.latenessMs(stallProbePostedAt, SystemClock.uptimeMillis())
-        if (MainThreadStall.shouldReport(lateBy)) {
-            AppLogRepository.logEvent(
-                DiagnosticSource.BUBBLE,
-                DiagnosticType.MAIN_THREAD_STALL,
-                "late_ms=$lateBy"
-            )
-        }
-        armStallProbe()
-    }
-
     private val screenReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 Intent.ACTION_SCREEN_OFF -> {
                     screenInteractive = false
-                    mainHandler.removeCallbacks(stallProbe)
                     lastFocusedEditableNode = null
                     lastEditableFocusElapsedMs = 0L
                     lastImeWindowPresent = false
@@ -212,20 +192,8 @@ open class RapchaAccessibilityService : AccessibilityService() {
                 }
                 Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
                     screenInteractive = isScreenInteractive()
-                    if (screenInteractive) {
-                        armStallProbe()
-                    }
                     scheduleCoalescedEvaluation(delayMs = 0L)
                 }
-            }
-        }
-    }
-
-    private val packageReceiver = object : android.content.BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: android.content.Intent?) {
-            val appCtx = context?.applicationContext ?: context ?: return
-            contextExecutor.execute {
-                AppDetector.refreshWebApkInventory(appCtx)
             }
         }
     }
@@ -255,11 +223,6 @@ open class RapchaAccessibilityService : AccessibilityService() {
         A11yWatchdog.onServiceBound(this)
         Log.d(TAG, "RapchaAccessibilityService active ($reason)")
 
-        val appCtx = applicationContext ?: this
-        // v24 Lite: no app detection, so AppDetector is never loaded.
-        if (!com.princeniithompson.rapcha.core.LiteMode.enabled) contextExecutor.execute {
-            AppDetector.init(appCtx)
-        }
         ensureEvalWorker()
         registerServiceReceivers()
 
@@ -286,7 +249,6 @@ open class RapchaAccessibilityService : AccessibilityService() {
         }
 
         screenInteractive = isScreenInteractive()
-        armStallProbe()
         scheduleCoalescedEvaluation(delayMs = 0L)
 
         // Start or recover bubble service without swapping its WindowManager
@@ -316,22 +278,6 @@ open class RapchaAccessibilityService : AccessibilityService() {
 
     private fun registerServiceReceivers() {
         if (receiversRegistered) return
-        // v24 Lite: the package receiver only refreshes app detection's WebAPK list.
-        if (!com.princeniithompson.rapcha.core.LiteMode.enabled) try {
-            val packageFilter = android.content.IntentFilter().apply {
-                addAction(Intent.ACTION_PACKAGE_ADDED)
-                addAction(Intent.ACTION_PACKAGE_REMOVED)
-                addAction(Intent.ACTION_PACKAGE_REPLACED)
-                addDataScheme("package")
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(packageReceiver, packageFilter, RECEIVER_NOT_EXPORTED)
-            } else {
-                registerReceiver(packageReceiver, packageFilter)
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error registering package update receiver: ${e.message}")
-        }
         try {
             val screenFilter = android.content.IntentFilter(Intent.ACTION_SCREEN_OFF).apply {
                 addAction(Intent.ACTION_SCREEN_ON)
@@ -451,11 +397,6 @@ open class RapchaAccessibilityService : AccessibilityService() {
                 keyboardSettle.reset(false)
                 if (lastReportedKeyboardVisible != false) {
                     lastReportedKeyboardVisible = false
-                    AppLogRepository.logEvent(
-                        DiagnosticSource.BUBBLE,
-                        DiagnosticType.KEYBOARD_HIDDEN,
-                        "ime=false fallback=false suppressed=device_locked"
-                    )
                     mainHandler.post {
                         FloatingBubbleManager.notifyKeyboardVisibility(false)
                         FloatingBubbleManager.notifyFieldFocus(false)
@@ -571,27 +512,20 @@ open class RapchaAccessibilityService : AccessibilityService() {
                 val resolvedPkg = ForegroundAppPicker.resolve(
                     windows = appWindows,
                     eventPackage = windowPkg,
-                    heldPackage = FloatingBubbleManager.currentForegroundPackage.value,
+                    heldPackage = lastForegroundPackage,
                     ignored = ::isForegroundNoise,
-                    packageSensitive = ::isPackageSensitive
+                    packageSensitive = { false }
                 )
                 resolvedPkgForGuard = resolvedPkg
-                if (resolvedPkg != null) {
-                    holdPackageSafeModeIfNeeded(resolvedPkg)
-                    if (com.princeniithompson.rapcha.core.LiteMode.enabled) {
-                        publishLiteForeground(resolvedPkg)
-                    } else {
-                        mainHandler.post {
-                            contextScheduler.submit(resolvedPkg, lastSeenClassName, windowTitle)
-                        }
-                    }
+                if (resolvedPkg != null && !IgnoredPackages.isIgnoredPackage(this, resolvedPkg)) {
+                    lastForegroundPackage = resolvedPkg
                 }
             } else {
                 resolvedPkgForGuard = ForegroundAppPicker.pick(
                     appWindows,
                     ::isForegroundNoise,
-                    ::isPackageSensitive
-                ) ?: FloatingBubbleManager.currentForegroundPackage.value
+                    { false }
+                ) ?: lastForegroundPackage
             }
 
             val focusNodePkg = try {
@@ -648,11 +582,6 @@ open class RapchaAccessibilityService : AccessibilityService() {
                         trigger = if (isImeWindowPresent) "ime_window" else "fallback_editable"
                     )
                 }
-                AppLogRepository.logEvent(
-                    DiagnosticSource.BUBBLE,
-                    if (settledVisible) DiagnosticType.KEYBOARD_SHOWN else DiagnosticType.KEYBOARD_HIDDEN,
-                    "ime=$isImeWindowPresent fallback=$fallbackUsed"
-                )
                 mainHandler.post {
                     FloatingBubbleManager.notifyKeyboardVisibility(settledVisible)
                     if (settledVisible &&
@@ -675,58 +604,12 @@ open class RapchaAccessibilityService : AccessibilityService() {
             Log.w(TAG, "Worker accessibility evaluation failed cleanly", t)
         } finally {
             lastEvalCompletedElapsedMs = SystemClock.elapsedRealtime()
-            val processingMs = lastEvalCompletedElapsedMs - started
-            if (processingMs >= 80L) {
-                AppLogRepository.logEvent(
-                    DiagnosticSource.BUBBLE,
-                    DiagnosticType.A11Y_EVENT,
-                    "worker_eval_ms=$processingMs"
-                )
-            }
         }
-    }
-
-    private fun holdPackageSafeModeIfNeeded(pkg: String) {
-        if (!FloatingBubbleManager.isSmartSafeModeEnabled.value) return
-        val verdict = SafeModeClassifier.classify(context = this, packageName = pkg)
-        if (!SessionPlacement.holdsImmediately(verdict)) return
-        mainHandler.post {
-            FloatingBubbleManager.engagePackageImmediately(verdict, pkg)
-        }
-    }
-
-    /**
-     * v24 Lite: Safe Mode from the package name and the focused field only. No AppDetector,
-     * no label lookup, no window-tree walk, no second getWindows(), no detection log.
-     */
-    private fun publishLiteForeground(pkg: String) {
-        val verdict = if (!FloatingBubbleManager.isSmartSafeModeEnabled.value) {
-            null
-        } else {
-            try {
-                SafeModeClassifier.classifyFromNodes(
-                    context = this,
-                    packageName = pkg,
-                    focusedNode = lastFocusedEditableNode,
-                    rootNode = null
-                )
-            } catch (_: Throwable) {
-                SafeModeClassifier.classify(context = this, packageName = pkg)
-            }
-        }
-        mainHandler.post {
-            FloatingBubbleManager.noteForegroundPackage(pkg)
-            if (verdict != null) FloatingBubbleManager.submitSafeMode(verdict)
-        }
-    }
-
-    private fun isPackageSensitive(pkg: String): Boolean {
-        return SafeModeClassifier.isSensitiveApp(this, pkg)
     }
 
     /** System UI, Rapcha, name-heuristic IMEs, and the device's enabled IME list. */
     private fun isForegroundNoise(pkg: String): Boolean {
-        if (AppContextResolver.isIgnoredPackage(this, pkg)) return true
+        if (IgnoredPackages.isIgnoredPackage(this, pkg)) return true
         return enabledImePackages().contains(pkg.lowercase())
     }
 
@@ -776,95 +659,6 @@ open class RapchaAccessibilityService : AccessibilityService() {
      * A thrown node query falls back to the package list so a banking app
      * still hides the bubble. Screen titles are not a trigger.
      */
-    private fun evaluateForeground(
-        packageName: String,
-        className: String?,
-        windowTitle: String?
-    ): ForegroundContextScheduler.Evaluation {
-        val resolved = try {
-            AppDetector.resolve(
-                context = this,
-                packageName = packageName,
-                className = className,
-                windowTitle = windowTitle
-            )
-        } catch (_: Throwable) {
-            null
-        }
-        if (!packageLabelCache.containsKey(packageName)) {
-            val label = try {
-                packageManager.getApplicationLabel(packageManager.getApplicationInfo(packageName, 0)).toString()
-            } catch (_: Throwable) {
-                ""
-            }
-            packageLabelCache[packageName] = label
-        }
-        val verdict = if (!FloatingBubbleManager.isSmartSafeModeEnabled.value) {
-            SafeModeClassifier.Verdict.notSensitive()
-        } else {
-            try {
-                val focused = try {
-                    findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-                } catch (_: Throwable) {
-                    null
-                } ?: lastFocusedEditableNode
-                val root = try {
-                    rootInActiveWindow
-                } catch (_: Throwable) {
-                    null
-                }
-                SafeModeClassifier.classifyFromNodes(
-                    context = this,
-                    packageName = packageName,
-                    focusedNode = focused,
-                    rootNode = root,
-                    windowTitle = windowTitle,
-                    resolvedAppName = resolved?.appName
-                )
-            } catch (_: Throwable) {
-                SafeModeClassifier.classify(
-                    context = this,
-                    packageName = packageName,
-                    resolvedAppName = resolved?.appName
-                )
-            }
-        }
-        return ForegroundContextScheduler.Evaluation(
-            sensitive = verdict.sensitive,
-            appName = resolved?.appName ?: packageName,
-            category = resolved?.category ?: "Other",
-            verdict = verdict
-        )
-    }
-
-    private fun publishForeground(packageName: String, evaluation: ForegroundContextScheduler.Evaluation) {
-        if (!evaluation.sensitive) {
-            val live = try {
-                ForegroundAppPicker.pick(readAppWindows(), ::isForegroundNoise, ::isPackageSensitive)
-            } catch (_: Throwable) {
-                null
-            }
-            if (live != null && !live.equals(packageName, ignoreCase = true) && isPackageSensitive(live)) {
-                holdPackageSafeModeIfNeeded(live)
-                return
-            }
-        }
-        FloatingBubbleManager.noteForegroundPackage(packageName)
-        FloatingBubbleManager.updateLearnedAppContext(evaluation.appName, evaluation.category)
-        val cachedLabel = packageLabelCache[packageName]?.takeIf { it.isNotBlank() }
-        com.princeniithompson.rapcha.data.AppDetectionLogRepository.logEvent(
-            com.princeniithompson.rapcha.data.AppDetectionEvent(
-                rawPackageName = packageName,
-                rawWindowTitle = null,
-                packageManagerLabel = cachedLabel,
-                resolvedAppName = evaluation.appName,
-                classificationSource = "CACHED_FOREGROUND",
-                finalCategory = evaluation.category
-            )
-        )
-        FloatingBubbleManager.submitSafeMode(evaluation.verdict)
-    }
-
     private fun isScreenInteractive(): Boolean {
         val power = getSystemService(POWER_SERVICE) as? PowerManager ?: return true
         return power.isInteractive
@@ -877,14 +671,6 @@ open class RapchaAccessibilityService : AccessibilityService() {
         } catch (_: Throwable) {
             false
         }
-    }
-
-    private fun armStallProbe() {
-        mainHandler.removeCallbacks(stallProbe)
-        if (com.princeniithompson.rapcha.core.LiteMode.enabled) return // v24 Lite: no main-thread stall diagnostics
-        if (!MainThreadStall.shouldSchedule(screenInteractive)) return
-        stallProbePostedAt = SystemClock.uptimeMillis()
-        mainHandler.postDelayed(stallProbe, MainThreadStall.INTERVAL_MS)
     }
 
     private fun scheduleKeyboardWatch() {
@@ -945,11 +731,6 @@ open class RapchaAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         Log.w(TAG, "RapchaAccessibilityService interrupted")
-        AppLogRepository.logEvent(
-            DiagnosticSource.BUBBLE,
-            DiagnosticType.WARNING,
-            "RapchaAccessibilityService onInterrupt"
-        )
     }
 
     private fun teardownConnectionState(clearEvalWorker: Boolean) {
@@ -969,7 +750,6 @@ open class RapchaAccessibilityService : AccessibilityService() {
         }
         unbindBubbleService("a11y_teardown")
         if (receiversRegistered) {
-            try { unregisterReceiver(packageReceiver) } catch (_: Exception) {}
             try { unregisterReceiver(screenReceiver) } catch (_: Exception) {}
             receiversRegistered = false
         }
@@ -978,7 +758,6 @@ open class RapchaAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         teardownConnectionState(clearEvalWorker = true)
-        contextExecutor.shutdownNow()
         lastFocusedEditableNode = null
         Log.d(TAG, "RapchaAccessibilityService destroyed")
     }
@@ -1019,26 +798,6 @@ open class RapchaAccessibilityService : AccessibilityService() {
                 finalOutcome = "FAILED",
                 injectionMethod = "NONE",
                 resultDetails = "SKIPPED: Text is empty"
-            )
-        }
-
-        if (FloatingBubbleManager.isCurrentAppSensitive.value && !FloatingBubbleManager.allowSafeModeInjection) {
-            Log.w(TAG, "injectText blocked: Smart Safe Mode is active")
-            val targetPkg = try { getActivePackageName() } catch (_: Throwable) { null } ?: "Unknown"
-            val appName = try {
-                AppContextResolver.resolve(this, targetPkg)?.appName ?: "App"
-            } catch (_: Throwable) {
-                "App"
-            }
-            return com.princeniithompson.rapcha.data.InjectionEvent(
-                targetPackage = targetPkg,
-                targetAppName = appName,
-                textLength = newText.length,
-                wordCount = wordCount,
-                rawTextPreview = rawPreview,
-                finalOutcome = "FAILED",
-                injectionMethod = "BLOCKED_SAFE_MODE",
-                resultDetails = "BLOCKED: Smart Safe Mode active"
             )
         }
 
@@ -1096,7 +855,7 @@ open class RapchaAccessibilityService : AccessibilityService() {
         val elapsed = android.os.SystemClock.elapsedRealtime() - startTime
         val nodeToInspect = targetNode ?: lastFocusedEditableNode
         val nodePkg = try { nodeToInspect?.packageName?.toString() ?: getActivePackageName() ?: "Unknown" } catch (_: Throwable) { "Unknown" }
-        val appName = try { AppContextResolver.resolve(this, nodePkg)?.appName ?: "App" } catch (_: Throwable) { "App" }
+        val appName = "App"
 
         return com.princeniithompson.rapcha.data.InjectionEvent(
             targetPackage = nodePkg,
@@ -1132,6 +891,7 @@ open class RapchaAccessibilityService : AccessibilityService() {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU) // only called after the SDK_INT >= 33 check above
     private fun commitAccessibilityInputConnectionOnMain(text: String): Boolean? {
         var connectionBound = false
         return try {
@@ -1515,14 +1275,14 @@ open class RapchaAccessibilityService : AccessibilityService() {
             val currentWindows = try { getWindows() } catch (e: Throwable) { null }
             if (!currentWindows.isNullOrEmpty()) {
                 val activePkg = getActivePackageName()
-                    ?: FloatingBubbleManager.currentForegroundPackage.value
-                    ?: FloatingBubbleManager.lockedSessionContext.value
+                    ?: lastForegroundPackage
+                    ?: NO_ACTIVE_PACKAGE
                 // Pass A: Look for focused editable in application windows belonging to active package
                 for (w in currentWindows) {
                     if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
                         val wRoot = w.root ?: continue
                         val pkg = wRoot.packageName?.toString()
-                        if (activePkg != null && pkg != activePkg && !AppContextResolver.isIgnoredPackage(this, pkg)) {
+                        if (activePkg != null && pkg != activePkg && !IgnoredPackages.isIgnoredPackage(this, pkg)) {
                             // Only skip if activePkg was specifically established and doesn't match
                             if (w.isFocused || w.isActive) {
                                 // Active or focused window should still be checked
@@ -1550,7 +1310,7 @@ open class RapchaAccessibilityService : AccessibilityService() {
                     if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
                         val wRoot = w.root ?: continue
                         val pkg = wRoot.packageName?.toString()
-                        if (AppContextResolver.isIgnoredPackage(this, pkg)) continue
+                        if (IgnoredPackages.isIgnoredPackage(this, pkg)) continue
                         if (activePkg != null && pkg != activePkg && !w.isFocused && !w.isActive) continue
                         val anyEditable = findBestEditableInTree(wRoot)
                         if (anyEditable != null) {
@@ -1645,7 +1405,7 @@ open class RapchaAccessibilityService : AccessibilityService() {
             val picked = ForegroundAppPicker.pick(
                 readAppWindows(),
                 ::isForegroundNoise,
-                ::isPackageSensitive
+                { false }
             )
             if (!picked.isNullOrBlank()) return picked
         } catch (e: Exception) {
@@ -1667,7 +1427,7 @@ open class RapchaAccessibilityService : AccessibilityService() {
 
         // 2. Check root in active window
         val rootPkg = rootInActiveWindow?.packageName?.toString()
-        if (!AppContextResolver.isIgnoredPackage(this, rootPkg)) {
+        if (!IgnoredPackages.isIgnoredPackage(this, rootPkg)) {
             return rootPkg
         }
 
@@ -1677,7 +1437,7 @@ open class RapchaAccessibilityService : AccessibilityService() {
             try {
                 if (last.refresh()) {
                     val lastNodePkg = last.packageName?.toString()
-                    if (!AppContextResolver.isIgnoredPackage(this, lastNodePkg)) {
+                    if (!IgnoredPackages.isIgnoredPackage(this, lastNodePkg)) {
                         return lastNodePkg
                     }
                 } else {
@@ -1695,7 +1455,7 @@ open class RapchaAccessibilityService : AccessibilityService() {
             for (window in currentWindows) {
                 if (window.type == AccessibilityWindowInfo.TYPE_APPLICATION && (window.isFocused || window.isActive)) {
                     val pkg = window.root?.packageName?.toString()
-                    if (!AppContextResolver.isIgnoredPackage(this, pkg)) {
+                    if (!IgnoredPackages.isIgnoredPackage(this, pkg)) {
                         return pkg
                     }
                 }
@@ -1704,7 +1464,7 @@ open class RapchaAccessibilityService : AccessibilityService() {
             for (window in currentWindows) {
                 if (window.type == AccessibilityWindowInfo.TYPE_APPLICATION) {
                     val pkg = window.root?.packageName?.toString()
-                    if (!AppContextResolver.isIgnoredPackage(this, pkg)) {
+                    if (!IgnoredPackages.isIgnoredPackage(this, pkg)) {
                         return pkg
                     }
                 }
@@ -1712,126 +1472,5 @@ open class RapchaAccessibilityService : AccessibilityService() {
         }
 
         return null
-    }
-
-    /**
-     * Safely extracts visible conversation context from the locked target application window.
-     * Collects the last 2-3 visible non-editable text snippets (e.g. preceding AI replies).
-     */
-    fun extractRecentConversationContext(): String? {
-        if (FloatingBubbleManager.isCurrentAppSensitive.value) {
-            Log.w(TAG, "extractRecentConversationContext blocked: Smart Safe Mode is active")
-            return null
-        }
-        val targetNode = getActiveEditableNode()
-        val root = rootInActiveWindow ?: targetNode ?: return null
-        val snippets = mutableListOf<String>()
-
-        try {
-            fun traverse(node: AccessibilityNodeInfo, depth: Int) {
-                if (depth > 6 || snippets.size >= 4) return
-                val text = node.text?.toString()?.trim()
-                if (!text.isNullOrBlank() && text.length > 8 && node != targetNode) {
-                    val cls = node.className?.toString() ?: ""
-                    if (!cls.contains("Button", ignoreCase = true) &&
-                        !cls.contains("EditText", ignoreCase = true) &&
-                        !cls.contains("ImageView", ignoreCase = true)
-                    ) {
-                        snippets.add(text.take(300))
-                    }
-                }
-                for (i in 0 until node.childCount) {
-                    val child = node.getChild(i) ?: continue
-                    traverse(child, depth + 1)
-                }
-            }
-            traverse(root, 0)
-        } catch (e: Exception) {
-            Log.w(TAG, "Notice traversing conversation context: ${e.message}")
-        }
-
-        return if (snippets.isNotEmpty()) snippets.takeLast(3).joinToString("\n---\n") else null
-    }
-
-    /**
-     * Extracts rich AI screen context (chat messages, visible instructions, and draft input)
-     * strictly when the foreground app is classified as an AI application.
-     */
-    fun extractAiScreenContext(): com.princeniithompson.rapcha.data.CapturedScreenContext? {
-        if (FloatingBubbleManager.isCurrentAppSensitive.value) {
-            Log.w(TAG, "extractAiScreenContext blocked: Sensitive app or Smart Safe Mode active")
-            return null
-        }
-
-        val activePkg = getActivePackageName() ?: return null
-        val appName = AppContextResolver.resolveAppName(this, activePkg)
-
-        // Strict boundary: Only extract context if the app is classified as an AI app
-        if (!AppClassifier.isAiChatApp(activePkg, appName)) {
-            Log.d(TAG, "extractAiScreenContext skipped: $appName ($activePkg) is not an AI app")
-            return null
-        }
-
-        val targetEditableNode = getActiveEditableNode()
-        val focusedInputDraft = targetEditableNode?.let { extractGenuineText(it) }?.takeIf { it.isNotBlank() }
-
-        val root = rootInActiveWindow ?: targetEditableNode ?: return null
-        val conversationMessages = mutableListOf<String>()
-        var systemInstructionText: String? = null
-
-        try {
-            fun traverseForAiContext(node: AccessibilityNodeInfo, depth: Int) {
-                if (depth > 12 || conversationMessages.size >= 12) return
-
-                val text = node.text?.toString()?.trim()
-                val className = node.className?.toString() ?: ""
-                val viewId = node.viewIdResourceName ?: ""
-
-                if (!text.isNullOrBlank() && text.length >= 4 && node != targetEditableNode) {
-                    val isInteractiveButton = className.contains("Button", ignoreCase = true) ||
-                            viewId.contains("send", ignoreCase = true) ||
-                            viewId.contains("attach", ignoreCase = true) ||
-                            viewId.contains("menu", ignoreCase = true)
-
-                    val isHeaderOrToolbar = viewId.contains("toolbar", ignoreCase = true) ||
-                            viewId.contains("action_bar", ignoreCase = true) ||
-                            viewId.contains("status", ignoreCase = true)
-
-                    if (!isInteractiveButton && !isHeaderOrToolbar && !className.contains("ImageView", ignoreCase = true)) {
-                        // Check if text looks like system/model instruction or prompt guidance
-                        if (text.contains("Custom Instructions", ignoreCase = true) ||
-                            text.contains("System Prompt", ignoreCase = true) ||
-                            text.contains("You are a helpful assistant", ignoreCase = true)
-                        ) {
-                            if (systemInstructionText == null) {
-                                systemInstructionText = text.take(400)
-                            }
-                        } else if (text.length > 8 && !conversationMessages.contains(text)) {
-                            // Don't capture tiny UI labels or single-word indicators
-                            conversationMessages.add(text.take(600))
-                        }
-                    }
-                }
-
-                for (i in 0 until node.childCount) {
-                    val child = node.getChild(i) ?: continue
-                    traverseForAiContext(child, depth + 1)
-                }
-            }
-
-            traverseForAiContext(root, 0)
-        } catch (e: Exception) {
-            Log.w(TAG, "Error traversing AI screen context: ${e.message}")
-        }
-
-        val result = com.princeniithompson.rapcha.data.CapturedScreenContext(
-            packageName = activePkg,
-            appName = appName,
-            conversationSnippets = conversationMessages.takeLast(10),
-            systemInstructions = systemInstructionText,
-            focusedInputText = focusedInputDraft
-        )
-        Log.d(TAG, "Extracted AI Screen Context from $appName: ${result.conversationSnippets.size} messages")
-        return result
     }
 }

@@ -6,7 +6,6 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import com.princeniithompson.rapcha.data.AppLogRepository
-import com.princeniithompson.rapcha.data.DiagnosticLogEntry
 import com.princeniithompson.rapcha.data.DiagnosticSource
 import com.princeniithompson.rapcha.data.DiagnosticType
 import java.util.ArrayDeque
@@ -64,7 +63,6 @@ object BubbleHealthLog {
     const val STOP_UNEXPECTED = "UNEXPECTED"
 
     const val HIDE_NO_IME_AFTER_SETTLE = "no_ime_after_settle"
-    const val HIDE_SENSITIVE_APP = "sensitive_app"
     const val HIDE_USER_HIDDEN = "user_hidden"
     const val HIDE_A11Y_LOST = "a11y_lost"
     const val HIDE_OVERLAY_PERMISSION_MISSING = "overlay_permission_missing"
@@ -73,7 +71,6 @@ object BubbleHealthLog {
     const val SHOW_OPPORTUNITY_DEADLINE_MS = 1_500L
 
     private val rateLimiter = BubbleHealthRateLimiter()
-    private val sessionDeviceTagEmitted = AtomicBoolean(false)
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Volatile
@@ -102,12 +99,7 @@ object BubbleHealthLog {
             Log.w(TAG, "BubbleHealth storm cap reached; dropping $type")
             return
         }
-        val prefix = if (context != null && sessionDeviceTagEmitted.compareAndSet(false, true)) {
-            "${NetworkAndDeviceDiagnostics.compactDeviceTag(context)} "
-        } else {
-            ""
-        }
-        AppLogRepository.logEvent(DiagnosticSource.BUBBLE, type, "$prefix$message".trim())
+        AppLogRepository.logEvent(DiagnosticSource.BUBBLE, type, message)
     }
 
     fun recordShowOpportunity(context: Context?, trigger: String, blockingReason: String = "pending_attach") {
@@ -116,9 +108,6 @@ object BubbleHealthLog {
         opportunityBlockingReason = blockingReason
         mainHandler.removeCallbacks(opportunityTimeoutRunnable)
         mainHandler.postDelayed(opportunityTimeoutRunnable, SHOW_OPPORTUNITY_DEADLINE_MS)
-        if (context != null && !sessionDeviceTagEmitted.get()) {
-            NetworkAndDeviceDiagnostics.initContext(context)
-        }
     }
 
     fun updateOpportunityBlockingReason(reason: String) {
@@ -212,33 +201,6 @@ object BubbleHealthLog {
     fun resetJobSuccessStreak(context: Context) {
         prefs(context).edit().putInt(KEY_CONSECUTIVE_JOB_SUCCESSES, 0).apply()
     }
-
-    fun recentBubbleHealthEvents(limit: Int = 5): List<DiagnosticLogEntry> {
-        return AppLogRepository.diagnosticEntries.value
-            .asSequence()
-            .filter { it.type in HEALTH_TYPES }
-            .take(limit)
-            .toList()
-    }
-
-    private val HEALTH_TYPES = setOf(
-        DiagnosticType.BUBBLE_ATTACH_FAILED,
-        DiagnosticType.BUBBLE_ATTACHED,
-        DiagnosticType.BUBBLE_HIDE_REASON,
-        DiagnosticType.SHOW_MISSED,
-        DiagnosticType.WATCHDOG_RECOVER,
-        DiagnosticType.FGS_REFUSED,
-        DiagnosticType.FGS_FALLBACK,
-        DiagnosticType.A11Y_UNBOUND,
-        DiagnosticType.A11Y_REBOUND,
-        DiagnosticType.A11Y_GHOST,
-        DiagnosticType.BOOT_RECONCILE,
-        DiagnosticType.JOB_RECOVERY,
-        DiagnosticType.TRIM_MEMORY,
-        DiagnosticType.RESTARTED_AFTER_KILL,
-        DiagnosticType.LOW_POWER_RENDER,
-        DiagnosticType.TASK_REMOVED
-    )
 
     private fun prefs(context: Context) =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

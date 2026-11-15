@@ -3,9 +3,6 @@ package com.princeniithompson.rapcha.service
 import android.app.Application
 import android.content.Context
 import com.princeniithompson.rapcha.data.CustomVocabularyRepository
-import com.princeniithompson.rapcha.data.HistoryRepository
-import com.princeniithompson.rapcha.service.floating.BubbleSignalLog
-import com.princeniithompson.rapcha.service.floating.BubbleTiming
 import com.princeniithompson.rapcha.service.floating.FloatingDictationSessionManager
 import com.princeniithompson.rapcha.ui.VoiceTypingViewModel
 import com.princeniithompson.rapcha.websocket.TranscriptAcceptance
@@ -25,18 +22,9 @@ import org.robolectric.annotation.Config
 class BubbleSyncAndVocabTest {
 
     @Test
-    fun `constructing the view model does not crash and clears the weekly vocab pref`() {
+    fun `constructing the view model does not crash`() {
         val app = RuntimeEnvironment.getApplication() as Application
-        val prefs = app.getSharedPreferences("voxstream_settings", Context.MODE_PRIVATE)
-        prefs.edit()
-            .putLong("last_weekly_smart_vocab_check_time", 123L)
-            .putBoolean("removed_weekly_smart_vocab_v1", false)
-            .commit()
-
         val viewModel = VoiceTypingViewModel(app)
-
-        assertFalse(prefs.contains("last_weekly_smart_vocab_check_time"))
-        assertTrue(prefs.getBoolean("removed_weekly_smart_vocab_v1", false))
         assertTrue(viewModel.customApiKey.value.isEmpty() || viewModel.customApiKey.value.isNotEmpty())
     }
 
@@ -82,6 +70,11 @@ class BubbleSyncAndVocabTest {
         assertEquals("", TranscriptAcceptance.accept("prince niithompson", 300.0, 500.0, vocab))
         assertEquals("send the invoice", TranscriptAcceptance.accept("send the invoice", 300.0, 500.0, vocab))
         assertEquals(invented, TranscriptAcceptance.accept(invented, 1800.0, 4200.0, vocab))
+        // v25: a soft one- or two-word phrase said near other people is kept (v24 dropped it).
+        assertEquals("send it", TranscriptAcceptance.accept("send it", 200.0, 380.0, vocab))
+        assertEquals("yes", TranscriptAcceptance.accept("yes", 165.0, 330.0, vocab))
+        assertFalse(TranscriptAcceptance.isNearSilent(200.0, 380.0))
+        assertTrue(TranscriptAcceptance.isNearSilent(130.0, 290.0))
         val clause = TranscriptAcceptance.vocabularyClause(vocab)
         assertTrue(clause.contains("Never insert a term that was not spoken"))
         assertFalse(clause.contains("Prioritize and accurately transcribe"))
@@ -91,66 +84,6 @@ class BubbleSyncAndVocabTest {
         assertFalse(dropped!!.contains("prince"))
         assertNull(TranscriptAcceptance.silenceDroppedMessage("send the invoice", "send the invoice", 1800.0, 4200.0))
         assertNull(TranscriptAcceptance.silenceDroppedMessage("", "", 10.0, 10.0))
-    }
-
-    @Test
-    fun `blank history does not record vocabulary usage`() {
-        val app = RuntimeEnvironment.getApplication()
-        val vocabPrefs = app.getSharedPreferences("custom_vocabulary_prefs", Context.MODE_PRIVATE)
-        vocabPrefs.edit().clear().putBoolean("seeded_identity_removed_v1", true).commit()
-        CustomVocabularyRepository.clearForTest()
-        CustomVocabularyRepository.init(app)
-        CustomVocabularyRepository.addTerm("invoice")
-        val before = CustomVocabularyRepository.vocabularyItems.value.first { it.term == "invoice" }.lastUsedTimestamp
-
-        HistoryRepository.clearForTest()
-        val historyPrefs = app.getSharedPreferences("history_repository_prefs", Context.MODE_PRIVATE)
-        historyPrefs.edit().clear().commit()
-        HistoryRepository.init(app)
-        assertNull(HistoryRepository.addHistoryItem("   "))
-        CustomVocabularyRepository.recordUsageFromTranscript("   ")
-        val after = CustomVocabularyRepository.vocabularyItems.value.first { it.term == "invoice" }.lastUsedTimestamp
-        assertEquals(before, after)
-    }
-
-    @Test
-    fun `foreground checks are debounced and cached`() {
-        val posted = mutableListOf<Pair<Runnable, Long>>()
-        val executed = mutableListOf<Runnable>()
-        val published = mutableListOf<Runnable>()
-        var evaluations = 0
-        val scheduler = ForegroundContextScheduler(
-            postDelayed = { runnable, delayMs -> posted.add(runnable to delayMs) },
-            cancel = { runnable -> posted.removeAll { it.first === runnable } },
-            execute = { runnable -> executed.add(runnable) },
-            publishOnMain = { runnable -> published.add(runnable) },
-            evaluate = { packageName, _, _ ->
-                evaluations += 1
-                ForegroundContextScheduler.Evaluation(false, packageName, "Notes")
-            }
-        )
-        scheduler.submit("com.google.android.keep", "Note", "Keep")
-        assertEquals(ForegroundContextScheduler.DEBOUNCE_MS, posted.single().second)
-        posted.single().first.run()
-        executed.single().run()
-        published.single().run()
-        assertEquals(1, evaluations)
-
-        val postedAfter = posted.size
-        scheduler.submit("com.google.android.keep", "Note", "Keep")
-        assertEquals(postedAfter, posted.size)
-        assertEquals(1, evaluations)
-
-        scheduler.submit("com.android.settings", "Settings", "Settings")
-        posted.last().first.run()
-        executed.last().run()
-        published.last().run()
-        assertEquals(2, evaluations)
-
-        scheduler.submit("com.google.android.keep", "Note", "Keep")
-        assertEquals(2, evaluations)
-        published.last().run()
-        assertEquals(2, evaluations)
     }
 
     @Test
@@ -180,30 +113,6 @@ class BubbleSyncAndVocabTest {
         assertTrue(FloatingBubbleService.keyboardRecheckShouldHide(imeVisible = false, sessionActive = false))
         assertFalse(FloatingBubbleService.keyboardRecheckShouldHide(imeVisible = false, sessionActive = true))
         assertFalse(FloatingBubbleService.keyboardRecheckShouldHide(imeVisible = true, sessionActive = false))
-    }
-
-    @Test
-    fun `stall lateness uses the handler clock and pauses while the screen is off`() {
-        assertEquals(2_000L, MainThreadStall.INTERVAL_MS)
-        assertFalse(MainThreadStall.shouldSchedule(screenInteractive = false))
-        assertTrue(MainThreadStall.shouldSchedule(screenInteractive = true))
-        val posted = 10_000L
-        assertEquals(0L, MainThreadStall.latenessMs(posted, posted + MainThreadStall.INTERVAL_MS))
-        assertFalse(MainThreadStall.shouldReport(MainThreadStall.latenessMs(posted, posted + MainThreadStall.INTERVAL_MS)))
-        assertTrue(MainThreadStall.shouldReport(MainThreadStall.latenessMs(posted, posted + MainThreadStall.INTERVAL_MS + 501L)))
-    }
-
-    @Test
-    fun `bubble hide latency is measured from the hide signal and logged once`() {
-        assertEquals(180L, BubbleTiming.latencyMs(15_000L, 15_180L))
-        assertEquals(0L, BubbleTiming.latencyMs(0L, 50_000L))
-        val log = BubbleSignalLog()
-        assertTrue(log.shouldLog(shown = true))
-        assertFalse(log.shouldLog(shown = true))
-        assertTrue(log.shouldLog(shown = false))
-        assertFalse(log.shouldLog(shown = false))
-        log.forget()
-        assertTrue(log.shouldLog(shown = true))
     }
 
     @Test

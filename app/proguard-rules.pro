@@ -50,3 +50,22 @@
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
+
+# ---- Rapcha v25 lean ----
+# Logging is a no-op in release: R8 removes android.util.Log calls (and the string building
+# for their arguments when it has no other side effects) and the AppLogRepository no-op stubs.
+-assumenosideeffects class android.util.Log {
+    public static boolean isLoggable(java.lang.String, int);
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+    public static int w(...);
+    public static int e(...);
+    public static int println(...);
+}
+-assumenosideeffects class com.princeniithompson.rapcha.data.AppLogRepository {
+    public void logEvent(...);
+    public void addLog(...);
+    public void updateLiveStats(...);
+    public void updateConnectionState(...);
+}

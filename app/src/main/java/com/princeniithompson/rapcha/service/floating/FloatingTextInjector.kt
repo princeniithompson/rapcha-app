@@ -273,21 +273,4 @@ object FloatingTextInjector {
             )
         }
     }
-
-    /**
-     * Live polish revised characters it already committed. Deletes that span, then
-     * commits [text] once. A missing input connection does not append [text].
-     */
-    suspend fun rewriteReporting(
-        context: Context,
-        previousLength: Int,
-        text: String
-    ): RapchaTextInserter.InsertionResult {
-        if (text.isBlank()) return RapchaTextInserter.InsertionResult.Failed
-        if (previousLength <= 0) return injectReporting(context, text)
-        val inserter = RapchaTextInserter.getInstance(context)
-        return withContext(Dispatchers.Default) {
-            inserter.rewriteCommitted(previousLength, text)
-        }
-    }
 }

@@ -183,34 +183,6 @@ object CustomVocabularyRepository {
         return _vocabulary.value
     }
 
-    fun syncUsageFromHistory(historyItems: List<HistoryItem>) {
-        if (historyItems.isEmpty()) return
-        val currentItems = _vocabularyItems.value.toMutableList()
-        var updated = false
-
-        currentItems.indices.forEach { idx ->
-            val item = currentItems[idx]
-            // Find newest history item containing this term
-            val newestMatch = historyItems
-                .filter { containsWordOrPhrase(it.text, item.term) }
-                .maxByOrNull { it.timestamp }
-
-            if (newestMatch != null && newestMatch.timestamp > item.lastUsedTimestamp) {
-                currentItems[idx] = item.copy(
-                    lastUsedTimestamp = newestMatch.timestamp,
-                    isKeepDismissed = false
-                )
-                updated = true
-            }
-        }
-
-        if (updated) {
-            _vocabularyItems.value = currentItems
-            recomputeCleanupSuggestions(currentItems)
-            saveAll(_vocabulary.value, currentItems)
-        }
-    }
-
     fun recordUsageFromTranscript(transcriptText: String) {
         if (transcriptText.isBlank()) return
         val currentItems = _vocabularyItems.value.toMutableList()

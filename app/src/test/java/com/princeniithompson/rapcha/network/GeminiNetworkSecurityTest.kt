@@ -1,7 +1,6 @@
 package com.princeniithompson.rapcha.network
 
 import com.princeniithompson.rapcha.core.ApiConfig
-import com.princeniithompson.rapcha.service.floating.FloatingPolishClient
 import com.princeniithompson.rapcha.websocket.GeminiLiveWebSocketClient
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
@@ -70,37 +69,6 @@ class GeminiNetworkSecurityTest {
 
         assertThrows(IllegalArgumentException::class.java) {
             GeminiLiveWebSocketClient.buildWebSocketRequest("  my_gemini_api_key  ")
-        }
-    }
-
-    @Test
-    fun `floating polish client throws IllegalArgumentException for missing or placeholder key`() {
-        assertThrows(IllegalArgumentException::class.java) {
-            FloatingPolishClient.polishTranscript(
-                apiKey = "",
-                rawTranscript = "Hello world"
-            )
-        }
-
-        assertThrows(IllegalArgumentException::class.java) {
-            FloatingPolishClient.polishTranscript(
-                apiKey = "   ",
-                rawTranscript = "Hello world"
-            )
-        }
-
-        assertThrows(IllegalArgumentException::class.java) {
-            FloatingPolishClient.polishTranscript(
-                apiKey = "MY_GEMINI_API_KEY",
-                rawTranscript = "Hello world"
-            )
-        }
-
-        assertThrows(IllegalArgumentException::class.java) {
-            FloatingPolishClient.polishTranscript(
-                apiKey = "  my_gemini_api_key  ",
-                rawTranscript = "Hello world"
-            )
         }
     }
 

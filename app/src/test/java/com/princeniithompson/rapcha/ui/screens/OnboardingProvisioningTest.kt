@@ -223,8 +223,6 @@ class OnboardingProvisioningTest {
         val vm = com.princeniithompson.rapcha.ui.VoiceTypingViewModel(app)
 
         assertFalse(vm.isApiKeyConfigured())
-        vm.startRecording()
-        assertFalse(vm.isRecording.value)
 
         val clipboard = app.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
         val copiedAqKey = "AQ.FakeUnitTestKeyNotReal000000000000000000000"

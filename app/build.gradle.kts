@@ -1,11 +1,8 @@
-import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
-
 plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.kotlin.compose)
   alias(libs.plugins.roborazzi)
   alias(libs.plugins.secrets)
-  alias(libs.plugins.google.services)
 }
 
 android {
@@ -16,8 +13,8 @@ android {
     applicationId = "com.princeniithompson.rapcha"
     minSdk = 24
     targetSdk = 36
-    versionCode = 24
-    versionName = "lite-24"
+    versionCode = 25
+    versionName = "lean-25"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -92,17 +89,13 @@ android {
 secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"
-  ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
   // The app never reads BuildConfig.GEMINI_API_KEY (the key comes from the user's own vault).
   // Keep any key from a local .env out of BuildConfig so it can never ship inside the APK.
   ignoreList.add("GEMINI_API_KEY")
 }
 
-googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
-
 dependencies {
   implementation(platform(libs.androidx.compose.bom))
-  implementation(platform(libs.firebase.bom))
   implementation(libs.androidx.activity.compose)
   implementation(libs.androidx.compose.material.icons.core)
   implementation(libs.androidx.compose.material.icons.extended)
@@ -115,16 +108,14 @@ dependencies {
   implementation(libs.androidx.lifecycle.runtime.compose)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)
-  implementation(libs.converter.moshi)
-  implementation(libs.firebase.ai)
-  implementation(libs.firebase.appcheck.recaptcha)
-  implementation(libs.firebase.appcheck.debug)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
-  implementation(libs.logging.interceptor)
-  implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
-  implementation(libs.retrofit)
+  constraints {
+    // v25: Firebase/Retrofit used to pull these up; pin them to the same versions v24 shipped.
+    implementation("com.squareup.okio:okio:3.9.1")
+    implementation("androidx.concurrent:concurrent-futures:1.2.0")
+  }
 
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)

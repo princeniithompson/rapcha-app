@@ -6,12 +6,6 @@ import android.content.Context
 import android.util.Log
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethod
-import com.princeniithompson.rapcha.data.AppLogRepository
-import com.princeniithompson.rapcha.data.DiagnosticSource
-import com.princeniithompson.rapcha.data.DiagnosticType
-import com.princeniithompson.rapcha.data.InjectionEvent
-import com.princeniithompson.rapcha.data.InjectionLogRepository
-import com.princeniithompson.rapcha.service.AppContextResolver
 import com.princeniithompson.rapcha.service.FloatingBubbleManager
 import com.princeniithompson.rapcha.service.RapchaAccessibilityService
 import kotlinx.coroutines.sync.Mutex
@@ -58,20 +52,17 @@ class RapchaTextInserter(private val context: Context) {
         when (directResult) {
             is DirectInjectionResult.Success -> {
                 Log.d(TAG, "Direct injection succeeded")
-                logDiagnosticInsertion(lastDirectMethod, success = true)
                 return@withLock InsertionResult.SuccessDirect
             }
             is DirectInjectionResult.FocusedFieldFailed -> {
                 // Requirement 3: Never use clipboard if a focused editable field exists (even if the write fails)
                 Log.w(TAG, "Focused editable field exists but write failed: ${directResult.reason}. Clipboard fallback strictly suppressed.")
-                logDiagnosticInsertion(lastDirectMethod, success = false)
                 return@withLock InsertionResult.Failed
             }
             is DirectInjectionResult.NoFocusedField -> {
                 // Requirement 2: Only fall back to clipboard when there is NO focused editable text field at all
                 Log.d(TAG, "No focused editable text field detected on screen. Falling back to clipboard.")
                 val fallbackSuccess = fallbackToClipboard(clipboardText.ifBlank { transcript })
-                logDiagnosticInsertion(if (fallbackSuccess) "clipboard" else "failed", success = fallbackSuccess)
                 return@withLock if (fallbackSuccess) {
                     InsertionResult.SuccessClipboardFallback
                 } else {
@@ -110,7 +101,6 @@ class RapchaTextInserter(private val context: Context) {
         val a11y = RapchaAccessibilityService.instance
         if (a11y != null) {
             val trace = a11y.injectTextDetailed(text)
-            InjectionLogRepository.logInjection(trace)
             lastDirectMethod = diagnosticMethod(trace.injectionMethod, trace.finalOutcome == "SUCCESS")
 
             if (trace.finalOutcome == "SUCCESS") {
@@ -142,45 +132,6 @@ class RapchaTextInserter(private val context: Context) {
     }
 
     /**
-     * Polish had no focused field to land in. The full text replaces the clipboard.
-     */
-    suspend fun copyNoField(text: String): InsertionResult = insertionMutex.withLock {
-        if (text.isBlank()) return@withLock InsertionResult.Failed
-        val copied = fallbackToClipboard(text)
-        logDiagnosticInsertion(
-            method = if (copied) "clipboard" else "failed",
-            success = copied,
-            reason = "no_field"
-        )
-        if (copied) InsertionResult.SuccessClipboardFallback else InsertionResult.Failed
-    }
-
-    private fun logDiagnosticInsertion(method: String, success: Boolean, reason: String? = null) {
-        val label = if (success) method else "failed"
-        val pkg = FloatingBubbleManager.currentForegroundPackage.value?.takeIf { it.isNotBlank() } ?: "unknown"
-        val why = if (reason.isNullOrBlank()) "" else " reason=$reason"
-        AppLogRepository.logEvent(
-            DiagnosticSource.BUBBLE,
-            DiagnosticType.TEXT_INSERTED,
-            "method=$label package=$pkg$why"
-        )
-    }
-
-    /**
-     * A session that was cut off before Complete. The words go to the clipboard
-     * even when a field is focused, and they are not typed into that field.
-     */
-    fun copyCutOffTranscript(text: String): Boolean {
-        if (text.isBlank()) return false
-        val ok = writeClipboard(
-            text = text,
-            details = "Copied to clipboard because the session was cut off before Complete"
-        )
-        logDiagnosticInsertion(if (ok) "clipboard" else "failed", success = ok)
-        return ok
-    }
-
-    /**
      * Strict Fallback: Copies to clipboard ONLY when no focused editable field is available.
      * Silent copy with subtle floating ring indicator (no intrusive toasts).
      */
@@ -192,7 +143,6 @@ class RapchaTextInserter(private val context: Context) {
         if (!ok) return false
         Log.d(TAG, "Strict Fallback: Copied transcript to clipboard (${text.length} chars)")
         FloatingBubbleManager.triggerClipboardFallbackIndicator()
-        FloatingHapticManager.trigger(context, FloatingHapticType.CLIPBOARD_FALLBACK)
         return true
     }
 
@@ -206,66 +156,10 @@ class RapchaTextInserter(private val context: Context) {
             val clip = ClipData.newPlainText("Rapcha Transcription", text)
             clipboard.setPrimaryClip(clip)
             Log.d(TAG, "Copied transcript to clipboard (${text.length} chars)")
-            logInjectionTrace(
-                text = text,
-                method = "FALLBACK_CLIPBOARD",
-                details = details,
-                outcome = "SUCCESS"
-            )
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error copying to clipboard: ${e.message}", e)
             false
-        }
-    }
-
-    private fun logInjectionTrace(text: String, method: String, details: String, outcome: String) {
-        val currentPkg = FloatingBubbleManager.currentForegroundPackage.value ?: "Unknown"
-        val appName = AppContextResolver.resolve(context, currentPkg)?.appName ?: "App"
-        val wordCount = text.trim().split("\\s+".toRegex()).count { it.isNotBlank() }
-
-        val event = InjectionEvent(
-            targetPackage = currentPkg,
-            targetAppName = appName,
-            textLength = text.length,
-            wordCount = wordCount,
-            rawTextPreview = text.take(40),
-            injectionMethod = method,
-            resultDetails = details,
-            finalOutcome = outcome,
-            durationMs = 30L
-        )
-        InjectionLogRepository.logInjection(event)
-    }
-
-    /**
-     * The Live stream already committed [previousLength] characters and the new
-     * snapshot is not a suffix of that paste. Delete them, then commit [fullText] once.
-     */
-    suspend fun rewriteCommitted(previousLength: Int, fullText: String): InsertionResult = insertionMutex.withLock {
-        if (fullText.isBlank()) return@withLock InsertionResult.Failed
-        val a11y = RapchaAccessibilityService.instance
-        val rewritten = a11y?.rewriteLastCommit(previousLength, fullText)
-        when (rewritten) {
-            true -> {
-                logDiagnosticInsertion("commitText", success = true)
-                InsertionResult.SuccessDirect
-            }
-            false -> {
-                logDiagnosticInsertion("failed", success = false)
-                InsertionResult.Failed
-            }
-            null -> {
-                if (a11y?.hasActiveEditableNode() == true) {
-                    Log.w(TAG, "Live rewrite has a field but no input connection. Refusing to append the full sentence.")
-                    logDiagnosticInsertion("failed", success = false)
-                    InsertionResult.Failed
-                } else {
-                    val copied = fallbackToClipboard(fullText)
-                    logDiagnosticInsertion(if (copied) "clipboard" else "failed", success = copied)
-                    if (copied) InsertionResult.SuccessClipboardFallback else InsertionResult.Failed
-                }
-            }
         }
     }
 

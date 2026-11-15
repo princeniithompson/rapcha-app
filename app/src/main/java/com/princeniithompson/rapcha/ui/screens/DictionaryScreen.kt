@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -115,7 +116,7 @@ fun DictionaryScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .heightIn(min = 48.dp)
                     .background(MaterialTheme.colorScheme.background)
                     .padding(horizontal = 14.dp),
                 contentAlignment = Alignment.Center
@@ -159,7 +160,7 @@ fun DictionaryScreen(
                 onValueChange = { searchQuery = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
+                    .heightIn(min = 56.dp)
                     .testTag("dictionary_search_input"),
                 placeholder = {
                     Text(

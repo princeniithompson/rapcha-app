@@ -3,6 +3,15 @@
 > **Document Target:** External AI Engineering Agents (Claude, ChatGPT, DeepSeek) & Senior Audio System Architects  
 > **Auditor Notice:** This document provides a zero-fabrication, 100% code-accurate mapping of the Android application's audio recording, processing, and real-time streaming pipeline to Google's Gemini Live BidiGenerateContent WebSocket API. It details the exact data flow, threading model, and root causes of observed intermittent transcription latency and background microphone lockups.
 
+> **v25 status (Nov 2026):** This report describes the pipeline before v25. In v25:
+> - The mic runs on its own urgent-audio thread with a 1 s buffer.
+> - Platform noise suppression, echo cancellation and auto-gain are turned off.
+> - The sent audio gets adaptive gain (up to 6x) with a soft limiter (`audio/SpeechGain.kt`).
+> - The near-silence gate was lowered to mean 160 / peak 320.
+> - The system prompt no longer tells the model to ignore "background" speech.
+> - Complete keeps the mic open for a 180 ms tail and sends the last partial packet.
+> - Audio is sent through one ordered queue (`OrderedAudioSender`, 15 s cap).
+
 ---
 
 ## 1. System Overview & Core Issues

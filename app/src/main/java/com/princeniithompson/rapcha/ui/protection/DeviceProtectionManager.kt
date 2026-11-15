@@ -77,7 +77,6 @@ object DeviceProtectionManager {
         val runningNow = FloatingBubbleService.instance != null
         val restartReason = BubbleHealthLog.lastRestartReason(app)
         val oemGuide = resolveOemGuide()
-        val recentEvents = BubbleHealthLog.recentBubbleHealthEvents(limit = 5)
 
         return DeviceHealthStatus(
             overlayGranted = overlay,
@@ -89,7 +88,7 @@ object DeviceProtectionManager {
             serviceRunningNow = runningNow,
             lastRestartReason = restartReason,
             oemGuide = oemGuide,
-            recentEvents = recentEvents
+            recentEvents = emptyList()
         )
     }
 

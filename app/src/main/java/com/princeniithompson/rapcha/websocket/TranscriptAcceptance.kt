@@ -9,10 +9,15 @@ import java.util.Locale
  * Speech pieces sat in the thousands. A near-silent piece is not sent to the
  * model for a final, and any text it already produced is dropped. A quiet
  * piece that comes back as nothing but vocabulary terms is dropped too.
+ *
+ * v25: the near-silent bar was lowered from mean 250 / max 450 to 160 / 320. A soft one- or
+ * two-word phrase said near other people can peak around 350-450 RMS per 100 ms on MIC, and
+ * the old bar threw it away before the model was asked for a final. Rooms measured as silent
+ * (mean ~130, peaks < 300) still fall under the new bar.
  */
 object TranscriptAcceptance {
-    const val NEAR_SILENT_MEAN = 250.0
-    const val NEAR_SILENT_MAX = 450.0
+    const val NEAR_SILENT_MEAN = 160.0
+    const val NEAR_SILENT_MAX = 320.0
     const val QUIET_MEAN = 400.0
     const val QUIET_MAX = 800.0
 

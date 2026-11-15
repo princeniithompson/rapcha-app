@@ -63,6 +63,22 @@ class GeminiLiveWebSocketClient(
 ) {
     companion object {
         private const val TAG = "GeminiLiveWS"
+        private const val SLOW_WS_HANDSHAKE_MS = 3_000L
+
+        /**
+         * v25: the old prompt told the model to ignore "background conversations", which made
+         * it drop the user's own soft one- or two-word phrases when other people were near.
+         * The speaker closest to the microphone is always transcribed, however quietly.
+         */
+        const val DICTATION_SYSTEM_PROMPT =
+            "You are an ultra-accurate real-time voice dictation engine. The user is holding the phone and " +
+                "speaking to it, often softly, quietly or in a near-whisper because other people are nearby. " +
+                "Transcribe every word the user closest to the microphone says, even a single quiet word or a " +
+                "short two-word phrase; never drop soft or short speech as background. " +
+                "Only leave out speech that is clearly farther away than the user's voice, and non-speech sounds " +
+                "such as music, clatter or traffic. Output only the transcribed text with proper capitalization " +
+                "and punctuation. Do not reply conversationally, do not answer questions, and do not add " +
+                "commentary; only output the verbatim transcription of what was said."
         const val DEFAULT_MODEL = "models/gemini-3.5-transcribe-live"
         const val WS_BASE_URL =
             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
@@ -184,22 +200,10 @@ class GeminiLiveWebSocketClient(
 
     private var isSmartMode: Boolean = false
     private var customVocabularyList: List<String> = emptyList()
-    private val prefinal = PrefinalBackup()
-    private var capturePrefinal = false
-    private var onPrefinalFrozen: ((String) -> Unit)? = null
+    /** v25: light adaptive gain on the transmitted copy of the audio only. */
+    private val speechGain = com.princeniithompson.rapcha.audio.SpeechGain()
     @Volatile var endpointTimedOut: Boolean = false
         private set
-
-    /**
-     * AI Live sessions keep a backup of the voice-container text and persist it
-     * before activityEnd. Normal apps leave this off.
-     */
-    fun enablePrefinalCapture(onFrozen: (String) -> Unit) {
-        capturePrefinal = true
-        onPrefinalFrozen = onFrozen
-    }
-
-    fun prefinalSnapshot(): String = prefinal.displayed()
 
     /**
      * Connect to Gemini Live WebSocket.
@@ -305,12 +309,12 @@ class GeminiLiveWebSocketClient(
                 }
 
                 val handshakeMs = (clock() - handshakeStartedMs).coerceAtLeast(0L)
-                val netTag = com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.currentTag()
+                val netTag = ""
                 val currentLiveCount = activeSocketCount.incrementAndGet()
                 socketsOpened += 1
                 planner.onConnectionOpened(clock())
                 logDiag(DiagnosticType.SOCKET_OPEN, "connection_age_ms=0 sockets=$socketsOpened handshake_ms=$handshakeMs $netTag")
-                if (handshakeMs >= com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.SLOW_WS_HANDSHAKE_MS) {
+                if (handshakeMs >= SLOW_WS_HANDSHAKE_MS) {
                     logDiag(
                         DiagnosticType.NET_SLOW_WARN,
                         "stage=stage1_ws_handshake latency_ms=$handshakeMs sockets=$socketsOpened $netTag"
@@ -363,7 +367,7 @@ class GeminiLiveWebSocketClient(
                     onLog(LogLevel.INFO, TAG, "WebSocket closed cleanly (code: $code, reason: $reasonDetail)", null)
                     notifyStateChanged(ConnectionState.Idle)
                 } else {
-                    val netTag = com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.currentTag()
+                    val netTag = ""
                     logDiag(
                         DiagnosticType.SOCKET_CLOSE,
                         "connection_age_ms=${planner.connectionAge(clock())} remote=yes code=$code reason=${reasonDetail.replace(' ', '_').take(80)} $netTag"
@@ -381,7 +385,7 @@ class GeminiLiveWebSocketClient(
 
                 val primaryMsg = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
                 val endedReason = DictationEndedReason.fromMessage(primaryMsg)
-                val netTag = com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.currentTag()
+                val netTag = ""
                 logDiag(
                     DiagnosticType.NET_FAILURE,
                     "stage=stage1_ws attempt=${reconnectAttempts.get()} exception=${t.javaClass.simpleName} http=${response?.code ?: 0} ended_reason=$endedReason session_active=${isSessionActive()} reason=${primaryMsg.replace('\n', ' ').take(140)} $netTag"
@@ -773,9 +777,6 @@ class GeminiLiveWebSocketClient(
                 settleEndpoint("", timedOut = false)
                 return@suspendCancellableCoroutine
             }
-            if (capturePrefinal) {
-                onPrefinalFrozen?.invoke(prefinal.seal())
-            }
             val sent = signalActivityEnd(recordMonitor = true)
             if (!sent) {
                 settleEndpoint(lastInterimText, timedOut = true)
@@ -913,7 +914,6 @@ class GeminiLiveWebSocketClient(
             logMonitorEvent(resumed)
         }
         publishInterimPreview()
-        if (capturePrefinal) prefinal.onPreview(text)
         notifyInterimTranscription(text)
     }
 
@@ -937,7 +937,7 @@ class GeminiLiveWebSocketClient(
     }
 
     private fun logMonitorEvent(event: InterimPreviewMonitor.Event) {
-        val netTag = com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.currentTag()
+        val netTag = ""
         val (type, message) = when (event) {
             is InterimPreviewMonitor.Event.Stall -> DiagnosticType.INTERIM_STALL to
                 "no interimInputTranscription or inputTranscription for ${event.gapMs}ms while speech audio was streaming $netTag"
@@ -987,7 +987,6 @@ class GeminiLiveWebSocketClient(
         pieceTimeout?.let { mainHandler.removeCallbacks(it) }
         pieceTimeout = null
         cancelCompanionWait()
-        prefinal.reset()
         endpointTimedOut = false
     }
 
@@ -1096,7 +1095,7 @@ class GeminiLiveWebSocketClient(
             }
         }
         val systemPromptText = buildString {
-            append("You are an ultra-accurate real-time voice dictation engine. Transcribe ONLY the words spoken by the primary user closest to the microphone. Completely ignore background ambient sounds, restaurant noise, kitchen clatter, passing vehicles, and background conversations. Never transcribe non-speech sounds. Output only the transcribed text with proper capitalization and punctuation. Do not reply conversationally, do not answer questions, and do not add commentary—only output the verbatim transcription of what was said.")
+            append(DICTATION_SYSTEM_PROMPT)
             append(TranscriptAcceptance.vocabularyClause(customVocabularyList))
         }
         val setupJson = JSONObject().apply {
@@ -1136,7 +1135,10 @@ class GeminiLiveWebSocketClient(
     private fun sendPcm(ws: WebSocket?, pcm: ByteArray, countReplay: Boolean): Boolean {
         if (ws == null) return false
         return try {
-            val base64Data = Base64.encodeToString(pcm, Base64.NO_WRAP)
+            // Gain is applied to the transmitted copy only; the planner, replay buffer and
+            // near-silence gate keep the raw level. Replayed audio does not retrain the gain.
+            val out = speechGain.process(pcm, adapt = countReplay)
+            val base64Data = Base64.encodeToString(out, Base64.NO_WRAP)
             val chunkJson = JSONObject().apply {
                 put("realtimeInput", JSONObject().apply {
                     put("audio", JSONObject().apply {
@@ -1190,10 +1192,6 @@ class GeminiLiveWebSocketClient(
         if (nearSilent) {
             completePieceSplit("", timedOut = false)
             return
-        }
-        if (capturePrefinal) {
-            prefinal.freezeOpenPiece()
-            onPrefinalFrozen?.invoke(prefinal.displayed())
         }
         val sent = signalActivityEnd(recordMonitor = false)
         if (!sent) {
@@ -1381,12 +1379,12 @@ class GeminiLiveWebSocketClient(
                     return
                 }
                 val handshakeMs = (clock() - companionHandshakeStartedMs).coerceAtLeast(0L)
-                val netTag = com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.currentTag()
+                val netTag = ""
                 opened.set(true)
                 activeSocketCount.incrementAndGet()
                 socketsOpened += 1
                 logDiag(DiagnosticType.SOCKET_OPEN, "connection_age_ms=0 sockets=$socketsOpened companion=yes handshake_ms=$handshakeMs $netTag")
-                if (handshakeMs >= com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.SLOW_WS_HANDSHAKE_MS) {
+                if (handshakeMs >= SLOW_WS_HANDSHAKE_MS) {
                     logDiag(
                         DiagnosticType.NET_SLOW_WARN,
                         "stage=stage1_companion_ws_handshake latency_ms=$handshakeMs sockets=$socketsOpened $netTag"
@@ -1417,7 +1415,7 @@ class GeminiLiveWebSocketClient(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 val promoted = this@GeminiLiveWebSocketClient.webSocket === webSocket
                 if (opened.compareAndSet(true, false)) releaseActiveSocket()
-                val netTag = com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.currentTag()
+                val netTag = ""
                 val detail = t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
                 logDiag(
                     DiagnosticType.NET_FAILURE,
@@ -1508,7 +1506,7 @@ class GeminiLiveWebSocketClient(
     private fun closeQuietly(socket: WebSocket?, ageMs: Long) {
         if (socket == null) return
         if (ageMs > 0L) {
-            val netTag = com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.currentTag()
+            val netTag = ""
             logDiag(DiagnosticType.SOCKET_CLOSE, "connection_age_ms=$ageMs code=1000 reason=session_ended $netTag")
         }
         try {

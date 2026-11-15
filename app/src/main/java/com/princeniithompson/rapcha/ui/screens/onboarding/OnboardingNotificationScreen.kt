@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -150,7 +151,7 @@ fun OnboardingNotificationScreen(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp)
+                        .heightIn(min = 54.dp)
                         .testTag("btn_allow_notifications")
                 ) {
                     Text("Allow notifications", fontSize = 17.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
@@ -168,7 +169,7 @@ fun OnboardingNotificationScreen(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp)
+                        .heightIn(min = 54.dp)
                         .testTag("btn_skip_notifications")
                 ) {
                     Text("Skip", fontSize = 17.sp, fontWeight = FontWeight.Medium, color = OnboardingInkBlack)
@@ -256,7 +257,7 @@ fun OnboardingNotificationScreen(
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp)
+                        .heightIn(min = 54.dp)
                         .testTag("btn_onboarding_finish")
                 ) {
                     Text("Finish", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)

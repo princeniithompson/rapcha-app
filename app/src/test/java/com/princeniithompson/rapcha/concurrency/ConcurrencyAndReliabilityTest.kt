@@ -183,39 +183,4 @@ class ConcurrencyAndReliabilityTest {
         assertNotNull("Error message must not be null", receivedError)
         assertTrue("Structured error must be MissingApiKey", receivedStructuredError is GeminiLiveError.MissingApiKey)
     }
-
-    @Test
-    fun `FloatingBubbleService onDestroy cancels pending polish debounce job and clears timestamp`() {
-        val serviceController = Robolectric.buildService(FloatingBubbleService::class.java)
-        val service = serviceController.get()
-
-        // Set up service
-        serviceController.create()
-
-        // Simulate a pending polish debounce job and click timestamp
-        val testScope = CoroutineScope(Dispatchers.Main)
-        val polishDeferred = CompletableDeferred<Unit>()
-        val pendingDebounceJob = testScope.launch {
-            delay(5000L)
-            polishDeferred.complete(Unit)
-        }
-
-        service.polishDebounceJob = pendingDebounceJob
-        service.lastPolishClickTime = SystemClock.elapsedRealtime()
-
-        assertTrue("Debounce job should initially be active", pendingDebounceJob.isActive)
-        assertTrue("lastPolishClickTime should be non-zero", service.lastPolishClickTime > 0L)
-
-        // Destroy service while polish debounce is pending
-        serviceController.destroy()
-
-        // Execute any pending loopers to confirm no delayed actions trigger
-        shadowOf(Looper.getMainLooper()).idle()
-
-        // Assert job is cancelled and lastPolishClickTime is cleared
-        assertTrue("Pending polish debounce job must be cancelled on service destroy", pendingDebounceJob.isCancelled)
-        assertNull("polishDebounceJob field must be null after onDestroy", service.polishDebounceJob)
-        assertEquals("lastPolishClickTime must be reset to 0L", 0L, service.lastPolishClickTime)
-        assertFalse("Delayed polish action must not have completed", polishDeferred.isCompleted)
-    }
 }

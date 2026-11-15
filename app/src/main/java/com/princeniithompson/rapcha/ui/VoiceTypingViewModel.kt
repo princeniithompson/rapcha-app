@@ -4,95 +4,35 @@ import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.princeniithompson.rapcha.BuildConfig
-import com.princeniithompson.rapcha.audio.AudioRecorder
-import com.princeniithompson.rapcha.data.ConnectionState
-import com.princeniithompson.rapcha.data.LiveStats
-import com.princeniithompson.rapcha.data.LogEntry
-import com.princeniithompson.rapcha.data.LogLevel
-import com.princeniithompson.rapcha.websocket.GeminiLiveWebSocketClient
-import com.princeniithompson.rapcha.data.DiagnosticSource
-import com.princeniithompson.rapcha.data.DiagnosticType
-import com.princeniithompson.rapcha.service.floating.LiveTextPolishClient
-import com.princeniithompson.rapcha.service.floating.Stage2CategoryMapper
-import com.princeniithompson.rapcha.service.floating.Stage2LivePolish
-import com.princeniithompson.rapcha.service.floating.Stage2PolishBackend
-import com.princeniithompson.rapcha.service.floating.Stage2PolishSettings
-import com.princeniithompson.rapcha.service.floating.ThreeStepPolishSettings
-import com.princeniithompson.rapcha.service.floating.Stage2SessionPolicy
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 
+/**
+ * v25 lean: settings + onboarding state only. Dictation runs in the floating bubble;
+ * there is no in-app recorder, history, diagnostics or polish state here.
+ */
 class VoiceTypingViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
-        private const val TAG = "VoiceTypingVM"
-        private const val MAX_LOGS = 120
         private const val PREFS_NAME = "voxstream_settings"
-        private const val KEY_SMART_MODE = "smart_mode"
-        private const val IN_APP_STOP_TIMEOUT_MS = 12_000L
         private const val KEY_CUSTOM_API_KEY = "custom_api_key"
-        private const val KEY_LAST_WEEKLY_CHECK_TIME = "last_weekly_smart_vocab_check_time"
-        private const val KEY_WEEKLY_VOCAB_REMOVED = "removed_weekly_smart_vocab_v1"
     }
 
     private val prefs = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-    val isSaveRecordingsEnabled: StateFlow<Boolean> = com.princeniithompson.rapcha.data.AudioRecordingRepository.isSaveRecordingsEnabled
-    val recordings: StateFlow<List<com.princeniithompson.rapcha.data.AudioRecording>> = com.princeniithompson.rapcha.data.AudioRecordingRepository.recordings
-
-    fun setSaveRecordingsEnabled(enabled: Boolean) {
-        com.princeniithompson.rapcha.data.AudioRecordingRepository.setSaveRecordingsEnabled(enabled)
-    }
-
-    fun deleteRecording(recording: com.princeniithompson.rapcha.data.AudioRecording) {
-        com.princeniithompson.rapcha.data.AudioRecordingRepository.deleteRecording(recording)
-    }
-
-    fun clearAllRecordings() {
-        com.princeniithompson.rapcha.data.AudioRecordingRepository.clearAllRecordings()
-    }
 
     private val _customApiKey = MutableStateFlow("")
     val customApiKey: StateFlow<String> = _customApiKey.asStateFlow()
 
     val isBubbleEnabled: StateFlow<Boolean> = com.princeniithompson.rapcha.service.FloatingBubbleManager.isBubbleEnabled
-    val isSmartSafeModeEnabled: StateFlow<Boolean> = com.princeniithompson.rapcha.service.FloatingBubbleManager.isSmartSafeModeEnabled
-    val isCurrentAppSensitive: StateFlow<Boolean> = com.princeniithompson.rapcha.service.FloatingBubbleManager.isCurrentAppSensitive
     val isAccessibilityConnected: StateFlow<Boolean> = com.princeniithompson.rapcha.service.FloatingBubbleManager.isAccessibilityConnected
     val hasOverlayPermission: StateFlow<Boolean> = com.princeniithompson.rapcha.service.FloatingBubbleManager.hasOverlayPermission
-    val selectedGlowStyleId: StateFlow<String> = com.princeniithompson.rapcha.service.FloatingBubbleManager.selectedGlowStyleId
-    val selectedFinishingStyleId: StateFlow<String> = com.princeniithompson.rapcha.service.FloatingBubbleManager.selectedFinishingStyleId
 
     fun refreshPermissions() {
         com.princeniithompson.rapcha.service.FloatingBubbleManager.checkPermissions(getApplication())
-    }
-
-    fun setSmartSafeModeEnabled(enabled: Boolean) {
-        com.princeniithompson.rapcha.service.FloatingBubbleManager.setSmartSafeModeEnabled(getApplication(), enabled)
-    }
-
-    fun setGlowStyle(styleId: String) {
-        com.princeniithompson.rapcha.service.FloatingBubbleManager.setGlowStyle(getApplication(), styleId)
-    }
-
-    fun setFinishingStyle(styleId: String) {
-        com.princeniithompson.rapcha.service.FloatingBubbleManager.setFinishingStyle(getApplication(), styleId)
     }
 
     val signedInGoogleEmail: StateFlow<String> = com.princeniithompson.rapcha.core.ApiKeyVault.googleEmailFlow
@@ -126,22 +66,10 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
                 }
             }
         }
-        com.princeniithompson.rapcha.data.AppLogRepository.init(application)
         com.princeniithompson.rapcha.service.FloatingBubbleManager.init(application)
-        if (!prefs.getBoolean(KEY_WEEKLY_VOCAB_REMOVED, false)) {
-            prefs.edit()
-                .remove(KEY_LAST_WEEKLY_CHECK_TIME)
-                .putBoolean(KEY_WEEKLY_VOCAB_REMOVED, true)
-                .apply()
-        }
     }
 
-    val diagnosticEntries: StateFlow<List<com.princeniithompson.rapcha.data.DiagnosticLogEntry>> = com.princeniithompson.rapcha.data.AppLogRepository.diagnosticEntries
-    val notes: StateFlow<List<com.princeniithompson.rapcha.data.DiagnosticNote>> = com.princeniithompson.rapcha.data.AppLogRepository.notes
-
     val isOnboardingCompleted: StateFlow<Boolean> = com.princeniithompson.rapcha.data.OnboardingRepository.isOnboardingCompleted
-    val preferredDockSide: StateFlow<String> = com.princeniithompson.rapcha.data.OnboardingRepository.preferredDockSide
-    val hasCompletedVoiceTest: StateFlow<Boolean> = com.princeniithompson.rapcha.data.OnboardingRepository.hasCompletedVoiceTest
 
     fun completeOnboarding() {
         com.princeniithompson.rapcha.data.OnboardingRepository.completeOnboarding()
@@ -151,199 +79,10 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
         com.princeniithompson.rapcha.data.OnboardingRepository.resetOnboarding()
     }
 
-    fun setPreferredDockSide(side: String) {
-        com.princeniithompson.rapcha.data.OnboardingRepository.setPreferredDockSide(side)
-    }
-
-    fun setVoiceTestDone(done: Boolean) {
-        com.princeniithompson.rapcha.data.OnboardingRepository.setVoiceTestDone(done)
-    }
-
-    fun addNote(text: String) {
-        com.princeniithompson.rapcha.data.AppLogRepository.addNote(text)
-    }
-
-    fun clearAllDiagnostics() {
-        com.princeniithompson.rapcha.data.AppLogRepository.clearAllDiagnostics()
-    }
-
     fun canDrawOverlays(): Boolean = com.princeniithompson.rapcha.service.FloatingBubbleManager.canDrawOverlays(getApplication())
 
     fun setBubbleEnabled(enabled: Boolean) {
         com.princeniithompson.rapcha.service.FloatingBubbleManager.setBubbleEnabled(getApplication(), enabled)
-    }
-
-    private val _isSmartMode = MutableStateFlow(prefs.getBoolean(KEY_SMART_MODE, false))
-    val isSmartMode: StateFlow<Boolean> = _isSmartMode.asStateFlow()
-
-    private val _polishOverride = MutableStateFlow(Stage2PolishSettings.read(prefs))
-    val polishOverride: StateFlow<Stage2PolishBackend> = _polishOverride.asStateFlow()
-
-    private val _threeStepPolish = MutableStateFlow(ThreeStepPolishSettings.read(prefs))
-    val threeStepPolish: StateFlow<Boolean> = _threeStepPolish.asStateFlow()
-
-    // v24 Lite: in-app dictation is Smart only too (no Live / Lyra).
-    private val _liveTwoStepPolish = MutableStateFlow(!com.princeniithompson.rapcha.core.LiteMode.enabled && _polishOverride.value == Stage2PolishBackend.LIVE)
-    val liveTwoStepPolish: StateFlow<Boolean> = _liveTwoStepPolish.asStateFlow()
-
-    /** Smart as the next session will actually run it. Live two-step forces verbatim. */
-    val effectiveSmartMode: Boolean
-        get() = Stage2SessionPolicy.effectiveSmartMode(
-            _isSmartMode.value,
-            if (_polishOverride.value == Stage2PolishBackend.LIVE) Stage2PolishBackend.LIVE else Stage2PolishBackend.NON_LIVE
-        )
-
-    private val _isRecording = MutableStateFlow(false)
-    val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
-
-    val connectionState: StateFlow<ConnectionState> = com.princeniithompson.rapcha.data.AppLogRepository.liveConnectionState
-
-    private val _finalizedTranscript = MutableStateFlow("")
-    val finalizedTranscript: StateFlow<String> = _finalizedTranscript.asStateFlow()
-
-    private val _interimTranscript = MutableStateFlow("")
-    val interimTranscript: StateFlow<String> = _interimTranscript.asStateFlow()
-
-    private val _audioAmplitude = MutableStateFlow(0f)
-    val audioAmplitude: StateFlow<Float> = _audioAmplitude.asStateFlow()
-
-    val stats: StateFlow<LiveStats> = com.princeniithompson.rapcha.data.AppLogRepository.liveStats
-
-    val logs: StateFlow<List<LogEntry>> = com.princeniithompson.rapcha.data.AppLogRepository.logs
-
-    private val _selectedModel = MutableStateFlow(GeminiLiveWebSocketClient.DEFAULT_MODEL)
-    val selectedModel: StateFlow<String> = _selectedModel.asStateFlow()
-
-    private val audioQueue = ConcurrentLinkedQueue<ByteArray>()
-    private val sessionEndLogged = AtomicBoolean(false)
-    private val _previewPhase = MutableStateFlow(com.princeniithompson.rapcha.websocket.InterimPreviewMonitor.Phase.LISTENING)
-    val previewPhase: StateFlow<com.princeniithompson.rapcha.websocket.InterimPreviewMonitor.Phase> = _previewPhase.asStateFlow()
-    private var connectionLostHapticSent = false
-    private var sessionClock = com.princeniithompson.rapcha.websocket.DictationSessionClock()
-    private var finishAtNextPause = false
-    private var sessionStartedAtMs = 0L
-    private var durationJob: Job? = null
-    private var drainJob: Job? = null
-    private val stopResult = AtomicReference<CompletableDeferred<String>?>(null)
-    @Volatile private var inAppStage1Dropped = false
-
-    private val webSocketClient = GeminiLiveWebSocketClient(
-            onSetupComplete = {
-            addLog(LogLevel.INFO, TAG, "setupComplete received! Flushing buffered queue & streaming live audio.")
-            com.princeniithompson.rapcha.data.AppLogRepository.updateLiveStats { it.copy(source = com.princeniithompson.rapcha.data.DiagnosticSource.APP, setupCompleted = true) }
-            onLiveSetupComplete()
-        },
-        onInterimTranscription = { text ->
-            _interimTranscript.value = text
-            com.princeniithompson.rapcha.data.AppLogRepository.updateLiveStats { it.copy(source = com.princeniithompson.rapcha.data.DiagnosticSource.APP, interimCount = it.interimCount + 1) }
-        },
-        onPieceCommitted = { piece ->
-            _finalizedTranscript.value = mergePiece(_finalizedTranscript.value, piece)
-            _interimTranscript.value = ""
-        },
-        onGoAway = {
-            val sessionMs = stats.value.durationSeconds * 1000L
-            if (sessionClock.shouldSplitOnGoAway(sessionMs)) {
-                splitOntoFreshSocket()
-            } else if (_isRecording.value) {
-                autoFinishSession()
-            }
-        },
-        onAudiblePause = {
-            if (finishAtNextPause && _isRecording.value) {
-                autoFinishSession()
-            }
-        },
-        onFinalizedTranscription = { text ->
-            val trimmedNew = text.trim()
-            if (trimmedNew.isNotEmpty()) {
-                com.princeniithompson.rapcha.data.AppLogRepository.logEvent(
-                    com.princeniithompson.rapcha.data.DiagnosticSource.APP,
-                    com.princeniithompson.rapcha.data.DiagnosticType.TRANSCRIPT_FINAL,
-                    com.princeniithompson.rapcha.data.TranscriptPrivacy.summary(trimmedNew)
-                )
-                _finalizedTranscript.value = mergePiece(_finalizedTranscript.value, trimmedNew)
-            }
-            _interimTranscript.value = ""
-            com.princeniithompson.rapcha.data.AppLogRepository.updateLiveStats { it.copy(source = com.princeniithompson.rapcha.data.DiagnosticSource.APP, finalizedCount = it.finalizedCount + 1) }
-        },
-        onStateChanged = { newState ->
-            com.princeniithompson.rapcha.data.AppLogRepository.updateConnectionState(newState, com.princeniithompson.rapcha.data.DiagnosticSource.APP)
-        },
-        onLog = { level, tag, msg, payload ->
-            addLog(level, tag, msg, payload)
-        },
-        onError = { errorMsg ->
-            inAppStage1Dropped = true
-            val endedReasonTag = com.princeniithompson.rapcha.data.DictationEndedReason.fromMessage(errorMsg)
-
-            com.princeniithompson.rapcha.data.AppLogRepository.updateLiveStats { it.copy(source = com.princeniithompson.rapcha.data.DiagnosticSource.APP, lastError = errorMsg) }
-            com.princeniithompson.rapcha.data.AppLogRepository.logEvent(
-                com.princeniithompson.rapcha.data.DiagnosticSource.APP,
-                com.princeniithompson.rapcha.data.DiagnosticType.ERROR,
-                errorMsg
-            )
-            if (_isRecording.value) {
-                stopRecording(endedReason = endedReasonTag)
-            }
-        },
-        isSessionActive = { _isRecording.value },
-        diagnosticSource = com.princeniithompson.rapcha.data.DiagnosticSource.APP,
-        onPreviewPhase = { phase ->
-            _previewPhase.value = phase
-            if (phase == com.princeniithompson.rapcha.websocket.InterimPreviewMonitor.Phase.CONNECTION_LOST) {
-                if (!connectionLostHapticSent) {
-                    connectionLostHapticSent = true
-                    com.princeniithompson.rapcha.service.floating.DictationAlerts.connectionDropped(getApplication())
-                }
-            } else {
-                connectionLostHapticSent = false
-            }
-        }
-    )
-
-    private var appWakeLock: android.os.PowerManager.WakeLock? = null
-
-    private val audioRecorder = AudioRecorder(
-        onChunkReady = { chunk ->
-            if (_isRecording.value) {
-                // If setup is already complete, send directly; otherwise queue in bounded memory
-                if (webSocketClient.setupComplete) {
-                    val sent = webSocketClient.sendAudioChunk(chunk)
-                    if (sent) {
-                        com.princeniithompson.rapcha.data.AppLogRepository.updateLiveStats {
-                            it.copy(
-                                source = com.princeniithompson.rapcha.data.DiagnosticSource.APP,
-                                chunksSent = it.chunksSent + 1,
-                                bytesSent = it.bytesSent + chunk.size,
-                                chunksBuffered = audioQueue.size
-                            )
-                        }
-                    } else {
-                        enqueueAudioChunk(chunk)
-                    }
-                } else {
-                    enqueueAudioChunk(chunk)
-                }
-            }
-        },
-        onAmplitudeChanged = { amp ->
-            _audioAmplitude.value = amp
-        },
-        onError = { err ->
-            addLog(LogLevel.ERROR, TAG, "AudioRecorder Error: $err")
-            com.princeniithompson.rapcha.data.AppLogRepository.updateLiveStats { it.copy(source = com.princeniithompson.rapcha.data.DiagnosticSource.APP, lastError = err) }
-            com.princeniithompson.rapcha.service.floating.DictationAlerts.microphoneFailed(getApplication())
-        }
-    )
-
-    private fun enqueueAudioChunk(chunk: ByteArray) {
-        // Cap pre-connection audio queue to max 20 chunks (2.0 seconds) to avoid buffer overflow
-        while (audioQueue.size >= 20) {
-            audioQueue.poll()
-        }
-        audioQueue.add(chunk)
-        com.princeniithompson.rapcha.data.AppLogRepository.updateLiveStats { it.copy(source = com.princeniithompson.rapcha.data.DiagnosticSource.APP, chunksBuffered = audioQueue.size) }
     }
 
     val effectiveApiKey: String
@@ -362,14 +101,12 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
             viewModelScope.launch {
                 com.princeniithompson.rapcha.core.ApiKeyVault.clearUserKeyOnly(getApplication())
             }
-            addLog(LogLevel.INFO, TAG, "Custom API key cleared")
         } else {
             _customApiKey.value = trimmed
             prefs.edit().putString(KEY_CUSTOM_API_KEY, trimmed).apply()
             viewModelScope.launch {
                 com.princeniithompson.rapcha.core.ApiKeyVault.syncManualKey(getApplication(), trimmed)
             }
-            addLog(LogLevel.INFO, TAG, "API key updated")
         }
     }
 
@@ -399,7 +136,6 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
                 cm.setPrimaryClip(maskedClip)
             } catch (_: Throwable) {
             }
-            addLog(LogLevel.INFO, TAG, "API key automatically injected from clipboard")
             true
         } catch (_: Throwable) {
             false
@@ -420,430 +156,8 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    fun setSelectedModel(model: String) {
-        _selectedModel.value = model.trim()
-    }
-
-    fun setSmartMode(enabled: Boolean) {
-        if (_isRecording.value) {
-            addLog(LogLevel.INFO, TAG, "Cannot change Smart Mode while session is recording")
-            return
-        }
-        _isSmartMode.value = enabled
-        prefs.edit().putBoolean(KEY_SMART_MODE, enabled).apply()
-        addLog(LogLevel.INFO, TAG, "Smart Mode set to $enabled (saved to preferences, takes effect next session)")
-    }
-
-    fun setPolishOverride(mode: Stage2PolishBackend) {
-        if (_isRecording.value) {
-            addLog(LogLevel.INFO, TAG, "Polish route changes on the next section, not while recording")
-            return
-        }
-        Stage2PolishSettings.write(prefs, mode)
-        _polishOverride.value = mode
-        _liveTwoStepPolish.value = !com.princeniithompson.rapcha.core.LiteMode.enabled && mode == Stage2PolishBackend.LIVE
-        com.princeniithompson.rapcha.service.FloatingBubbleManager.refreshLiveTwoStep(getApplication())
-        addLog(LogLevel.INFO, TAG, "Polish route set to ${mode.storedValue()} for the next section")
-    }
-
-    fun setThreeStepPolish(enabled: Boolean) {
-        if (_isRecording.value) {
-            addLog(LogLevel.INFO, TAG, "Three-step changes on the next section, not while recording")
-            return
-        }
-        ThreeStepPolishSettings.write(prefs, enabled)
-        _threeStepPolish.value = enabled
-        addLog(LogLevel.INFO, TAG, "Three-step polish set to $enabled for the next AI section")
-    }
-
-    fun toggleRecording() {
-        if (_isRecording.value) {
-            stopRecording()
-        } else {
-            startRecording()
-        }
-    }
-
-    fun startRecording() {
-        if (_isRecording.value) return
-
-        val requiredApiKey = effectiveApiKey
-        if (com.princeniithompson.rapcha.core.ApiConfig.isPlaceholder(requiredApiKey)) {
-            addLog(LogLevel.ERROR, TAG, "Blocked recording: Gemini API key is required.")
-            com.princeniithompson.rapcha.data.AppLogRepository.updateLiveStats {
-                it.copy(
-                    source = com.princeniithompson.rapcha.data.DiagnosticSource.APP,
-                    lastError = "Gemini API key is required."
-                )
-            }
-            com.princeniithompson.rapcha.data.AppLogRepository.updateConnectionState(
-                ConnectionState.Error("Gemini API key is required. Add your key in Settings or Diagnostics."),
-                com.princeniithompson.rapcha.data.DiagnosticSource.APP
-            )
-            return
-        }
-
-        sessionEndLogged.set(false)
-        connectionLostHapticSent = false
-        inAppStage1Dropped = false
-        finishAtNextPause = false
-        sessionClock = com.princeniithompson.rapcha.websocket.DictationSessionClock()
-        sessionStartedAtMs = System.currentTimeMillis()
-        _previewPhase.value = com.princeniithompson.rapcha.websocket.InterimPreviewMonitor.Phase.LISTENING
-        _isRecording.value = true
-        _interimTranscript.value = ""
-        audioQueue.clear()
-        com.princeniithompson.rapcha.data.AppLogRepository.updateLiveStats {
-            LiveStats(
-                source = com.princeniithompson.rapcha.data.DiagnosticSource.APP,
-                setupCompleted = false
-            )
-        }
-        com.princeniithompson.rapcha.data.AppLogRepository.updateConnectionState(ConnectionState.Connecting, com.princeniithompson.rapcha.data.DiagnosticSource.APP)
-
-        try {
-            val powerManager = getApplication<Application>().getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
-            if (appWakeLock?.isHeld == true) {
-                try { appWakeLock?.release() } catch (_: Exception) {}
-            }
-            appWakeLock = powerManager.newWakeLock(
-                android.os.PowerManager.PARTIAL_WAKE_LOCK,
-                "voxstream:in_app_voice_typing_wakelock"
-            ).apply {
-                acquire(30 * 60 * 1000L /* 30 minutes max */)
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not acquire WakeLock for in-app session", e)
-        }
-
-        val apiKey = effectiveApiKey
-        val smartForSession = effectiveSmartMode
-        val modeLabel = if (smartForSession) "SMART" else "VERBATIM"
-        val stage2Label = if (_liveTwoStepPolish.value) "live" else "non_live"
-        val appCtx = getApplication<Application>()
-        com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.initContext(appCtx)
-        val offlineReason = com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.checkOfflineOrAirplaneReason(appCtx)
-        if (offlineReason != null) {
-            com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.recordNetworkFailure(
-                source = com.princeniithompson.rapcha.data.DiagnosticSource.APP,
-                stage = "session_start",
-                reason = "starting_while_$offlineReason",
-                context = appCtx
-            )
-        }
-        val deviceTag = com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.compactDeviceTag(appCtx)
-        val netTag = com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.currentTag(appCtx)
-        addLog(LogLevel.INFO, TAG, "Starting voice typing session ($modeLabel mode, stage2=$stage2Label). Key configured: ${isApiKeyConfigured()} | $netTag")
-        com.princeniithompson.rapcha.data.AppLogRepository.logEvent(
-            com.princeniithompson.rapcha.data.DiagnosticSource.APP,
-            com.princeniithompson.rapcha.data.DiagnosticType.SESSION_START,
-            "Mode: $modeLabel, Model: ${_selectedModel.value}, stage2=$stage2Label $deviceTag $netTag"
-        )
-
-        // 1. Immediately start AudioRecord on Dispatchers.IO to capture speech without clipping
-        audioRecorder.start(
-            viewModelScope,
-            source = com.princeniithompson.rapcha.data.DiagnosticSource.APP
-        )
-
-        // 2. Open Gemini Live WebSocket connection
-        val customVocab = com.princeniithompson.rapcha.data.CustomVocabularyRepository.getVocabulary()
-        try {
-            webSocketClient.connect(apiKey, _selectedModel.value, smartForSession, customVocabulary = customVocab)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed connecting WebSocket: ${e.message}")
-            addLog(LogLevel.ERROR, TAG, "Connection failed: ${e.message}")
-            stopRecording(endedReason = "connection_error")
-            return
-        }
-
-        // 3. Start recording duration timer
-        durationJob?.cancel()
-        durationJob = viewModelScope.launch {
-            val start = sessionStartedAtMs
-            while (isActive && _isRecording.value) {
-                delay(500)
-                webSocketClient.pollInterimPreview()
-                val elapsedMs = System.currentTimeMillis() - start
-                val elapsedSec = (elapsedMs / 1000).toInt()
-                com.princeniithompson.rapcha.data.AppLogRepository.updateLiveStats { it.copy(source = com.princeniithompson.rapcha.data.DiagnosticSource.APP, durationSeconds = elapsedSec) }
-                onSessionClockTick(elapsedMs)
-            }
-        }
-    }
-
-    fun cancelSession() {
-        val wasRecording = _isRecording.value
-        val hasTranscript = _finalizedTranscript.value.isNotBlank() || _interimTranscript.value.isNotBlank()
-
-        if (wasRecording) {
-            stopRecording(endedReason = "user_cancelled")
-        } else if (hasTranscript && sessionEndLogged.compareAndSet(false, true)) {
-            com.princeniithompson.rapcha.data.AppLogRepository.logEvent(
-                com.princeniithompson.rapcha.data.DiagnosticSource.APP,
-                com.princeniithompson.rapcha.data.DiagnosticType.SESSION_END,
-                "ended_reason: user_cancelled"
-            )
-        }
-        clearTranscript()
-    }
-
-    fun stopRecording(endedReason: String = "completed") {
-        if (!_isRecording.value) {
-            stopResult.getAndSet(null)?.complete(currentTranscript())
-            return
-        }
-        _isRecording.value = false
-        val shouldLogEnd = sessionEndLogged.compareAndSet(false, true)
-        val sessionLimitStop = endedReason == "session_limit"
-        durationJob?.cancel()
-
-        addLog(LogLevel.INFO, TAG, "Stopping recording session ($endedReason)...")
-
-        val wl = appWakeLock
-        appWakeLock = null
-
-        // 1. Stop mic capture and signal WS completion
-        viewModelScope.launch(Dispatchers.IO) {
-            val durationAtEnd = if (sessionStartedAtMs > 0L) {
-                ((System.currentTimeMillis() - sessionStartedAtMs).coerceAtLeast(0L) / 1000L).toInt()
-            } else {
-                stats.value.durationSeconds
-            }
-            val chunksAtEnd = stats.value.chunksSent
-            val bytesAtEnd = stats.value.bytesSent
-
-            try {
-                audioRecorder.stopAndJoin()
-                _audioAmplitude.value = 0f
-                while (true) {
-                    val chunk = audioQueue.poll() ?: break
-                    if (!webSocketClient.sendAudioChunk(chunk)) break
-                }
-                val shouldEndActivity = endedReason == "completed" || endedReason == "session_limit"
-                if (shouldEndActivity) {
-                    val finalText = webSocketClient.endActivityAndAwaitFinal().trim()
-                    if (finalText.isNotBlank()) {
-                        _finalizedTranscript.value = finalText
-                        _interimTranscript.value = ""
-                    } else if (stats.value.bytesSent > 32_000L) {
-                        com.princeniithompson.rapcha.service.floating.DictationAlerts.finalTextLost(getApplication())
-                    }
-                }
-                webSocketClient.disconnect()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error stopping in-app session", e)
-            } finally {
-                val fullText = _finalizedTranscript.value.trim()
-                if (fullText.isNotBlank()) {
-                    val words = fullText.split("\\s+".toRegex()).count { it.isNotBlank() }
-                    com.princeniithompson.rapcha.data.AppLogRepository.recordInjectionResult(
-                        durationMs = maxOf(400L, durationAtEnd * 1000L),
-                        wordCount = words,
-                        targetApp = "Rapcha",
-                        transcriptText = fullText,
-                        source = com.princeniithompson.rapcha.data.DiagnosticSource.APP
-                    )
-                }
-                com.princeniithompson.rapcha.data.AppLogRepository.updateConnectionState(ConnectionState.Idle, com.princeniithompson.rapcha.data.DiagnosticSource.APP)
-                addLog(LogLevel.INFO, TAG, "Session completed ($endedReason). Total chunks sent: $chunksAtEnd")
-                if (shouldLogEnd) {
-                    com.princeniithompson.rapcha.data.AppLogRepository.logEvent(
-                        com.princeniithompson.rapcha.data.DiagnosticSource.APP,
-                        com.princeniithompson.rapcha.data.DiagnosticType.SESSION_END,
-                        "ended_reason: $endedReason | Duration: ${durationAtEnd}s, Chunks: $chunksAtEnd, Streamed: ${bytesAtEnd / 1024} KB | ${webSocketClient.sessionSummary()}"
-                    )
-                }
-                if (sessionLimitStop && _finalizedTranscript.value.isNotBlank()) {
-                    com.princeniithompson.rapcha.service.floating.DictationAlerts.sessionEnded(getApplication(), copied = false)
-                }
-                _previewPhase.value = com.princeniithompson.rapcha.websocket.InterimPreviewMonitor.Phase.LISTENING
-                try {
-                    if (wl?.isHeld == true) {
-                        wl.release()
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error releasing WakeLock in ViewModel", e)
-                }
-                val waiter = stopResult.getAndSet(null)
-                if (waiter != null && !waiter.isCompleted) {
-                    waiter.complete(currentTranscript())
-                }
-            }
-        }
-    }
-
-    /**
-     * In-app Complete while Live two-step is on. Waits for the raw Stage-1 text,
-     * polishes it, and falls back to that raw text if Stage 2 fails.
-     * Callers on the non-live path keep using [stopRecording] directly.
-     */
-    suspend fun finishInAppComplete(): String {
-        val raw = if (_isRecording.value) {
-            val deferred = CompletableDeferred<String>()
-            stopResult.set(deferred)
-            stopRecording(endedReason = "completed")
-            withTimeoutOrNull(IN_APP_STOP_TIMEOUT_MS) { deferred.await() } ?: currentTranscript()
-        } else {
-            currentTranscript()
-        }
-        val quotaAvailable = com.princeniithompson.rapcha.service.floating.PolishQuotaMonitor.isPrimaryAvailable(getApplication())
-        if (raw.isBlank() || !_liveTwoStepPolish.value || !quotaAvailable || !isApiKeyConfigured()) return raw
-        val dropped = inAppStage1Dropped
-        inAppStage1Dropped = false
-        return try {
-            withContext(Dispatchers.IO) {
-                Stage2LivePolish.execute(
-                    rawTranscript = raw,
-                    category = Stage2CategoryMapper.map(getApplication<Application>().packageName, "Rapcha", null),
-                    protectedTerms = com.princeniithompson.rapcha.data.CustomVocabularyRepository.getVocabulary(),
-                    stage1Dropped = dropped,
-                    apiKey = effectiveApiKey,
-                    model = com.princeniithompson.rapcha.service.floating.FlashLiteTextPolishClient(getApplication()),
-                    modelName = com.princeniithompson.rapcha.config.RapchaConfig.STAGE2_FLASH_LITE_MODEL,
-                    log = { type, message ->
-                        com.princeniithompson.rapcha.data.AppLogRepository.logEvent(
-                            DiagnosticSource.APP,
-                            type,
-                            message
-                        )
-                    }
-                ).text.ifBlank { raw }
-            }
-        } catch (t: Throwable) {
-            Log.e(TAG, "In-app Stage-2 polish failed closed", t)
-            com.princeniithompson.rapcha.data.AppLogRepository.logEvent(
-                DiagnosticSource.APP,
-                DiagnosticType.STAGE2_LIVE_FALLBACK,
-                "outcome=fallback_raw reason=${t.message?.take(160) ?: t.javaClass.simpleName}"
-            )
-            raw
-        }
-    }
-
-    private fun currentTranscript(): String {
-        return buildString {
-            append(_finalizedTranscript.value.trim())
-            val interim = _interimTranscript.value.trim()
-            if (interim.isNotEmpty()) {
-                if (isNotEmpty()) append(' ')
-                append(interim)
-            }
-        }.trim()
-    }
-
-    private fun onLiveSetupComplete() {
-        webSocketClient.signalActivityStart()
-        drainAudioQueue()
-    }
-
-    private fun drainAudioQueue() {
-        drainJob?.cancel()
-        drainJob = viewModelScope.launch(Dispatchers.IO) {
-            var drainedCount = 0
-            while (isActive && webSocketClient.setupComplete) {
-                val chunk = audioQueue.poll() ?: break
-                val sent = webSocketClient.sendAudioChunk(chunk)
-                if (sent) {
-                    drainedCount++
-                    com.princeniithompson.rapcha.data.AppLogRepository.updateLiveStats {
-                        it.copy(
-                            source = com.princeniithompson.rapcha.data.DiagnosticSource.APP,
-                            chunksSent = it.chunksSent + 1,
-                            bytesSent = it.bytesSent + chunk.size,
-                            chunksBuffered = maxOf(0, it.chunksBuffered - 1)
-                        )
-                    }
-                    if (audioQueue.isNotEmpty()) {
-                        delay(25) // Smooth 25ms pace so server is not flooded
-                    }
-                } else {
-                    // Socket not writable, put chunk back or delay
-                    audioQueue.add(chunk)
-                    delay(20)
-                    break
-                }
-            }
-            if (drainedCount > 0) {
-                addLog(LogLevel.INFO, TAG, "Flushed $drainedCount pre-buffered chunks to Gemini Live")
-            }
-        }
-    }
-
-    fun clearTranscript() {
-        _finalizedTranscript.value = ""
-        _interimTranscript.value = ""
-        addLog(LogLevel.INFO, TAG, "Transcript cleared")
-    }
-
-    private fun splitOntoFreshSocket() {
-        webSocketClient.requestFreshConnectionSplit()
-    }
-
-    private fun autoFinishSession() {
-        if (!_isRecording.value) return
-        stopRecording(endedReason = "session_limit")
-    }
-
-    private fun onSessionClockTick(sessionMs: Long) {
-        val tick = sessionClock.onTick(sessionMs, webSocketClient.isSingleConnection())
-        if (tick.warn) {
-            com.princeniithompson.rapcha.service.floating.DictationAlerts.endingSoon(getApplication())
-        }
-        if (tick.armFinishAtPause) {
-            finishAtNextPause = true
-            if (webSocketClient.currentPauseMs() >= com.princeniithompson.rapcha.websocket.DictationPiecePlanner.PAUSE_MS) {
-                autoFinishSession()
-            }
-        }
-        if (tick.hardStop) {
-            autoFinishSession()
-        }
-    }
-
-    private fun mergePiece(current: String, piece: String): String {
-        val trimmed = piece.trim()
-        if (trimmed.isEmpty()) return current.trim()
-        val base = current.trim()
-        if (base == trimmed || base.endsWith(" $trimmed")) return base
-        return com.princeniithompson.rapcha.websocket.TranscriptSeam.append(base, trimmed)
-    }
-
-    fun copyTranscript(context: Context): Boolean {
-        val fullText = buildString {
-            append(_finalizedTranscript.value)
-            if (_interimTranscript.value.isNotEmpty()) {
-                if (isNotEmpty()) append(" ")
-                append(_interimTranscript.value)
-            }
-        }.trim()
-
-        if (fullText.isEmpty()) return false
-
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = ClipData.newPlainText("Rapcha Transcript", fullText)
-        clipboard.setPrimaryClip(clip)
-        addLog(LogLevel.INFO, TAG, "Copied transcript to clipboard (${fullText.length} chars)")
-        return true
-    }
-
-    private fun addLog(level: LogLevel, tag: String, message: String, payload: String? = null) {
-        com.princeniithompson.rapcha.data.AppLogRepository.addLog(level, tag, message, payload)
-    }
-
-    fun clearLogs() {
-        com.princeniithompson.rapcha.data.AppLogRepository.clearLiveFrames()
-    }
-
     override fun onCleared() {
+        prefs.unregisterOnSharedPreferenceChangeListener(prefsKeyListener)
         super.onCleared()
-        try {
-            prefs.unregisterOnSharedPreferenceChangeListener(prefsKeyListener)
-        } catch (_: Throwable) {
-        }
-        audioRecorder.stop()
-        webSocketClient.disconnect()
-        durationJob?.cancel()
-        drainJob?.cancel()
     }
 }

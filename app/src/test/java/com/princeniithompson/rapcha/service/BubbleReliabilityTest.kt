@@ -7,8 +7,6 @@ import com.princeniithompson.rapcha.data.AppLogRepository
 import com.princeniithompson.rapcha.data.DiagnosticType
 import com.princeniithompson.rapcha.diagnostics.BubbleHealthLog
 import com.princeniithompson.rapcha.diagnostics.BubbleHealthRateLimiter
-import com.princeniithompson.rapcha.service.floating.RenderBudgetEngine
-import com.princeniithompson.rapcha.service.floating.RenderModePreference
 import com.princeniithompson.rapcha.ui.protection.DeviceProtectionManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -363,51 +361,6 @@ class BubbleReliabilityTest {
     }
 
     @Test
-    fun `render budget engine detects low ram memory class trim power save jank and user overrides`() {
-        // AUTO on high-RAM healthy device -> false
-        assertFalse(
-            RenderBudgetEngine.shouldUseLowPower(
-                preference = RenderModePreference.AUTO,
-                isLowRamDevice = false,
-                totalRamBytes = 8L * 1024 * 1024 * 1024,
-                memoryClassMb = 512,
-                trimMemoryLowOrCritical = false,
-                isPowerSaveMode = false,
-                jankDetected = false
-            )
-        )
-        // 3 GB RAM triggers AUTO low power
-        assertTrue(
-            RenderBudgetEngine.shouldUseLowPower(
-                preference = RenderModePreference.AUTO,
-                isLowRamDevice = false,
-                totalRamBytes = 3L * 1024 * 1024 * 1024,
-                memoryClassMb = 512,
-                trimMemoryLowOrCritical = false,
-                isPowerSaveMode = false,
-                jankDetected = false
-            )
-        )
-        // isLowRamDevice / memoryClass <= 256 / trim / powerSave / jank
-        assertTrue(RenderBudgetEngine.shouldUseLowPower(RenderModePreference.AUTO, true, 8_000_000_000L, 512, false, false, false))
-        assertTrue(RenderBudgetEngine.shouldUseLowPower(RenderModePreference.AUTO, false, 8_000_000_000L, 256, false, false, false))
-        assertTrue(RenderBudgetEngine.shouldUseLowPower(RenderModePreference.AUTO, false, 8_000_000_000L, 512, true, false, false))
-        assertTrue(RenderBudgetEngine.shouldUseLowPower(RenderModePreference.AUTO, false, 8_000_000_000L, 512, false, true, false))
-        assertTrue(RenderBudgetEngine.shouldUseLowPower(RenderModePreference.AUTO, false, 8_000_000_000L, 512, false, false, true))
-
-        // User overrides
-        assertFalse(RenderBudgetEngine.shouldUseLowPower(RenderModePreference.ALWAYS_FULL, true, 3_000_000_000L, 128, true, true, true))
-        assertTrue(RenderBudgetEngine.shouldUseLowPower(RenderModePreference.ALWAYS_LIGHT, false, 12_000_000_000L, 512, false, false, false))
-
-        // Choreographer frame monitoring only runs when overlay is visible, AUTO, not already low-power, and jank not yet hit
-        assertTrue(RenderBudgetEngine.shouldMonitorFrames(overlayVisible = true, preference = RenderModePreference.AUTO, currentLowPower = false, jankDetected = false))
-        assertFalse(RenderBudgetEngine.shouldMonitorFrames(overlayVisible = false, preference = RenderModePreference.AUTO, currentLowPower = false, jankDetected = false))
-        assertFalse(RenderBudgetEngine.shouldMonitorFrames(overlayVisible = true, preference = RenderModePreference.AUTO, currentLowPower = true, jankDetected = false))
-        assertFalse(RenderBudgetEngine.shouldMonitorFrames(overlayVisible = true, preference = RenderModePreference.AUTO, currentLowPower = false, jankDetected = true))
-        assertFalse(RenderBudgetEngine.shouldMonitorFrames(overlayVisible = true, preference = RenderModePreference.ALWAYS_FULL, currentLowPower = false, jankDetected = false))
-    }
-
-    @Test
     fun `a11y watchdog policy handles post update grace rebinding permission revoked and healthy`() {
         // Bubble disabled -> NONE
         assertEquals(
@@ -503,11 +456,5 @@ class BubbleReliabilityTest {
         assertTrue(BubbleHealthLog.isInPostUpdateGraceWindow(context))
 
         receiver.onReceive(context, Intent(Intent.ACTION_BOOT_COMPLETED))
-        val bootEntry = AppLogRepository.diagnosticEntries.value.firstOrNull {
-            it.type == DiagnosticType.BOOT_RECONCILE
-        }
-        assertNotNull(bootEntry)
-        assertTrue(bootEntry!!.message.contains("trigger=boot"))
-        assertTrue(bootEntry.message.contains("outcome=skipped_disabled"))
     }
 }

@@ -3,7 +3,6 @@ package com.princeniithompson.rapcha.service.floating
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -13,15 +12,15 @@ import com.princeniithompson.rapcha.R
 
 /**
  * High-importance dictation alerts. These are separate from the ongoing
- * foreground-service notification. If notification permission is denied,
- * the matching haptic still runs.
+ * foreground-service notification. v25 lean: no haptics; nothing is shown when
+ * notification permission is denied.
  */
 object DictationAlerts {
     const val CHANNEL_ID = "rapcha_dictation_alerts"
     const val NOTIFICATION_ID = 2002
 
     fun endingSoon(context: Context) {
-        alert(context, "1 minute left in this session", FloatingHapticType.ENDING_SOON)
+        alert(context, "1 minute left in this session")
     }
 
     fun sessionEnded(context: Context, copied: Boolean) {
@@ -30,91 +29,27 @@ object DictationAlerts {
         } else {
             "Session ended at 10 minutes. Your text was typed in"
         }
-        alert(context, text, FloatingHapticType.ENDED)
+        alert(context, text)
     }
 
     fun connectionDropped(context: Context) {
-        alert(context, "Connection dropped. Audio is not being sent.", FloatingHapticType.PROBLEM)
+        alert(context, "Connection dropped. Audio is not being sent.")
     }
 
     fun microphoneFailed(context: Context) {
-        alert(context, "Microphone isn't capturing audio.", FloatingHapticType.PROBLEM)
+        alert(context, "Microphone isn't capturing audio.")
     }
 
     fun finalTextLost(context: Context) {
-        alert(context, "Final transcript was lost.", FloatingHapticType.PROBLEM)
+        alert(context, "Final transcript was lost.")
     }
 
     fun placementFailed(context: Context) {
-        alert(context, "Rapcha couldn't place your text.", FloatingHapticType.PROBLEM)
+        alert(context, "Rapcha couldn't place your text.")
     }
 
     fun textCopied(context: Context) {
-        alert(context, "Your text was copied.", FloatingHapticType.ENDED)
-    }
-
-    const val RETRY_READY_NOTIFICATION_ID = 2003
-
-    /**
-     * Tells the user the network is back and a dictation can be retried.
-     * Returns false when notification permission is missing.
-     */
-    fun retryNetworkBack(context: Context, tap: PendingIntent): Boolean {
-        if (!canPost(context)) return false
-        createChannel(context)
-        val text = "Network is back. Tap to retry this dictation."
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Rapcha")
-            .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_STATUS)
-            .setAutoCancel(true)
-            .setContentIntent(tap)
-            .build()
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(RETRY_READY_NOTIFICATION_ID, notification)
-        return true
-    }
-
-    /**
-     * A normal suggestion with Yes / Edit / No. No haptic: this is not an error.
-     * Returns false when notification permission is missing so the caller can ask again later.
-     */
-    fun vocabularySuggestion(
-        context: Context,
-        notificationId: Int,
-        display: String,
-        sessionCount: Int,
-        yes: PendingIntent,
-        edit: PendingIntent,
-        no: PendingIntent,
-        dismiss: PendingIntent
-    ): Boolean {
-        if (!canPost(context)) return false
-        createChannel(context)
-        val text = "Add \"$display\" to custom vocabulary?"
-        val times = if (sessionCount == 1) "1 session" else "$sessionCount sessions"
-        val detail = "You've used \"$display\" in $times. Add it to your dictionary?"
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Rapcha")
-            .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
-            .setAutoCancel(false)
-            .setOnlyAlertOnce(true)
-            .setContentIntent(edit)
-            .setDeleteIntent(dismiss)
-            .addAction(NotificationCompat.Action(0, "Yes", yes))
-            .addAction(NotificationCompat.Action(0, "Edit", edit))
-            .addAction(NotificationCompat.Action(0, "No", no))
-            .build()
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(notificationId, notification)
-        return true
+        alert(context, "Your text was copied.")
     }
 
     fun cancel(context: Context, notificationId: Int) {
@@ -122,8 +57,7 @@ object DictationAlerts {
         manager.cancel(notificationId)
     }
 
-    private fun alert(context: Context, text: String, haptic: FloatingHapticType) {
-        FloatingHapticManager.trigger(context, haptic)
+    private fun alert(context: Context, text: String) {
         if (!canPost(context)) return
         createChannel(context)
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)

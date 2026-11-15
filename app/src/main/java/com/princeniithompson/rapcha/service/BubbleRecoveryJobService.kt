@@ -10,7 +10,6 @@ import android.util.Log
 import com.princeniithompson.rapcha.data.AppLogRepository
 import com.princeniithompson.rapcha.data.DiagnosticType
 import com.princeniithompson.rapcha.diagnostics.BubbleHealthLog
-import com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics
 import com.princeniithompson.rapcha.service.floating.FloatingNotificationManager
 
 object BubbleRecoveryJobScheduler {
@@ -64,7 +63,6 @@ class BubbleRecoveryJobService : JobService() {
     override fun onStartJob(params: JobParameters?): Boolean {
         val app = applicationContext
         AppLogRepository.init(app)
-        NetworkAndDeviceDiagnostics.initContext(app)
 
         val enabled = FloatingBubbleManager.isBubbleEnabledSync(app)
         val hasOverlay = FloatingBubbleManager.canDrawOverlays(app)

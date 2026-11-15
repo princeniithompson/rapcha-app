@@ -21,7 +21,6 @@ import androidx.compose.ui.platform.ViewCompositionStrategy
 import com.princeniithompson.rapcha.data.AppLogRepository
 import com.princeniithompson.rapcha.data.DiagnosticSource
 import com.princeniithompson.rapcha.data.DiagnosticType
-import com.princeniithompson.rapcha.data.ScreenContextRepository
 import com.princeniithompson.rapcha.diagnostics.BubbleHealthLog
 import com.princeniithompson.rapcha.diagnostics.BubbleHealthRateLimiter
 import com.princeniithompson.rapcha.service.A11yRepairKind
@@ -51,7 +50,7 @@ class FloatingOverlayWindowManager(private val context: Context) {
         private val ATTACH_BACKOFF_MS = longArrayOf(250L, 1_000L, 3_000L, 10_000L)
 
         /**
-         * The bubble, expanded panel, and scan preview share one window.
+         * The bubble and the expanded compact pill share one window.
          * NOT_FOCUSABLE keeps a tap on Complete from taking input focus, so the editor's
          * input connection stays bound. NOT_TOUCH_MODAL lets touches outside the overlay
          * through. LAYOUT_NO_LIMITS + LAYOUT_IN_SCREEN + HARDWARE_ACCELERATED match reliable
@@ -84,21 +83,11 @@ class FloatingOverlayWindowManager(private val context: Context) {
     private var attachRetryAttempt = 0
     private var pendingRetryRunnable: Runnable? = null
 
-    val overlayTranscript = MutableStateFlow("")
-    val overlayPreviewPhase = MutableStateFlow(com.princeniithompson.rapcha.websocket.InterimPreviewMonitor.Phase.LISTENING)
-    val overlayPolishingMessage = MutableStateFlow<String?>(null)
     val overlayRecording = MutableStateFlow(false)
     val overlayElapsedSeconds = MutableStateFlow(0)
     val overlayPendingFinalizing = MutableStateFlow(false)
-    val overlayPolishing = MutableStateFlow(false)
     val overlayExpanded = MutableStateFlow(false)
     val overlayShrunk = MutableStateFlow(false)
-    val overlayAudioAmplitude = MutableStateFlow(0f)
-    val overlayScanMode = MutableStateFlow(false)
-    val overlayScanningAnimation = MutableStateFlow(false)
-    val overlayScanningAppName = MutableStateFlow<String?>(null)
-    val overlayScanOriginX = MutableStateFlow(0.5f)
-    val overlayScanOriginY = MutableStateFlow(0.5f)
     val overlayBubbleVisible = MutableStateFlow(false)
 
     private val shrinkRunnable = Runnable { applyShrink() }
@@ -111,12 +100,9 @@ class FloatingOverlayWindowManager(private val context: Context) {
     fun isWindowVisible(): Boolean = overlayView?.visibility == View.VISIBLE
 
     fun shouldBeVisible(): Boolean {
-        if (FloatingBubbleManager.isCurrentAppSensitive.value) return false
         return overlayRecording.value ||
             overlayExpanded.value ||
             overlayPendingFinalizing.value ||
-            overlayPolishing.value ||
-            overlayScanningAnimation.value ||
             FloatingBubbleManager.isKeyboardVisible.value ||
             A11yWatchdog.repairKind.value != A11yRepairKind.NONE
     }
@@ -136,10 +122,8 @@ class FloatingOverlayWindowManager(private val context: Context) {
     fun initOverlay(
         onRingClick: () -> Unit,
         onCancelClick: () -> Unit,
-        onPolishClick: () -> Unit,
         onCompleteClick: () -> Unit,
         onLongPressBubble: () -> Unit = {},
-        onScanTriggered: () -> Unit = {},
         onRepairClick: () -> Unit = {}
     ) {
         lifecycleOwner.onCreate()
@@ -194,59 +178,30 @@ class FloatingOverlayWindowManager(private val context: Context) {
         val composeContext = createFontWeightSafeContext(context)
         val composeView = ComposeView(composeContext).apply {
             lifecycleOwner.attachToView(this)
-            isHapticFeedbackEnabled = !com.princeniithompson.rapcha.core.LiteMode.enabled // v24 Lite
+            isHapticFeedbackEnabled = false // v25 lean: no haptics
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnLifecycleDestroyed(lifecycleOwner))
             setContent {
-                val transcript by overlayTranscript.collectAsState()
                 val recording by overlayRecording.collectAsState()
                 val pendingFinalizing by overlayPendingFinalizing.collectAsState()
-                val polishing by overlayPolishing.collectAsState()
                 val isExpanded by overlayExpanded.collectAsState()
                 val isShrunk by overlayShrunk.collectAsState()
-                val audioAmplitude by overlayAudioAmplitude.collectAsState()
-                val isScanMode by overlayScanMode.collectAsState()
-                val isScanningAnimation by overlayScanningAnimation.collectAsState()
-                val scanningAppName by overlayScanningAppName.collectAsState()
-                val scanOriginX by overlayScanOriginX.collectAsState()
-                val scanOriginY by overlayScanOriginY.collectAsState()
-                val isContextLoaded by ScreenContextRepository.isContextLoaded.collectAsState()
                 val elapsedSeconds by overlayElapsedSeconds.collectAsState()
-                val selectedGlowStyleId by FloatingBubbleManager.selectedGlowStyleId.collectAsState()
-                val selectedFinishingStyleId by FloatingBubbleManager.selectedFinishingStyleId.collectAsState()
-                val isCurrentAppSensitive by FloatingBubbleManager.isCurrentAppSensitive.collectAsState()
-                val bubbleVisible by overlayBubbleVisible.collectAsState()
                 val repairKind by A11yWatchdog.repairKind.collectAsState()
 
                 FloatingOverlayContent(
-                    transcript = transcript,
                     recording = recording,
                     pendingFinalizing = pendingFinalizing,
-                    polishing = polishing,
                     isExpanded = isExpanded,
                     isShrunk = isShrunk,
-                    audioAmplitude = audioAmplitude,
-                    isScanMode = isScanMode,
-                    isScanningAnimation = isScanningAnimation,
-                    scanningAppName = scanningAppName,
-                    scanOriginX = scanOriginX,
-                    scanOriginY = scanOriginY,
                     isSnappedToRight = dragSnapHandler.isSnappedToRight,
-                    isContextLoaded = isContextLoaded,
-                    selectedGlowStyleId = selectedGlowStyleId,
                     elapsedSeconds = elapsedSeconds,
-                    selectedFinishingStyleId = selectedFinishingStyleId,
-                    isCurrentAppSensitive = isCurrentAppSensitive,
-                    bubbleVisible = bubbleVisible,
                     repairKind = repairKind,
                     onRepairClick = onRepairClick,
                     onRingClick = onRingClick,
                     onCancelClick = onCancelClick,
-                    onPolishClick = onPolishClick,
                     onCompleteClick = onCompleteClick,
                     onLongPressBubble = onLongPressBubble,
-                    onScanTriggered = onScanTriggered,
                     onDragStart = {
-                        FloatingHapticManager.trigger(context, FloatingHapticType.BUBBLE_HOLD)
                         resetInactivityTimer(keepShrunk = true)
                     },
                     onDrag = { dx, dy ->
@@ -289,27 +244,8 @@ class FloatingOverlayWindowManager(private val context: Context) {
         val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
         overlayScope = scope
         scope.launch {
-            FloatingBubbleManager.isCurrentAppSensitive.collect { sensitive ->
-                if (sensitive) {
-                    hideOverlayImmediately(BubbleHealthLog.HIDE_SENSITIVE_APP)
-                } else {
-                    restoreOverlayVisibility(
-                        FloatingBubbleManager.isKeyboardVisible.value ||
-                            A11yWatchdog.repairKind.value != A11yRepairKind.NONE
-                    )
-                }
-            }
-        }
-        scope.launch {
-            FloatingBubbleManager.bubbleChrome.collect {
-                if (overlayExpanded.value) {
-                    expandPanel()
-                }
-            }
-        }
-        scope.launch {
             A11yWatchdog.repairKind.collect { kind ->
-                if (kind != A11yRepairKind.NONE && !FloatingBubbleManager.isCurrentAppSensitive.value) {
+                if (kind != A11yRepairKind.NONE) {
                     val root = overlayView ?: return@collect
                     if (!root.isAttachedToWindow) {
                         attachWithRetry("a11y_repair")
@@ -421,7 +357,6 @@ class FloatingOverlayWindowManager(private val context: Context) {
     private fun setViewVisibilityImmediate(view: View, visible: Boolean, reason: String? = null) {
         view.visibility = if (visible) View.VISIBLE else View.GONE
         overlayBubbleVisible.value = visible
-        RenderBudget.setOverlayFrameMonitoring(visible)
         setOverlayRendering(visible)
         if (!visible && reason != null) {
             lastHideReason = reason
@@ -469,7 +404,6 @@ class FloatingOverlayWindowManager(private val context: Context) {
     }
 
     fun expandPanel() {
-        if (FloatingBubbleManager.isCurrentAppSensitive.value) return
         dragSnapHandler.cancel()
         overlayExpanded.value = true
         val lp = layoutParams ?: return
@@ -480,23 +414,17 @@ class FloatingOverlayWindowManager(private val context: Context) {
         val topY = (36 * density).toInt()
         val maxY = (screenHeight - (320 * density).toInt()).coerceAtLeast(topY + (60 * density).toInt())
 
-        val isCompact = FloatingBubbleManager.bubbleChrome.value == BubbleChromeStyle.COMPACT
+        // v25 lean: always the compact pill.
         val edgeMarginPx = (BubbleChromeGeometry.EDGE_MARGIN_DP * density).toInt()
         val windowPaddingPx = (BubbleChromeGeometry.WINDOW_PADDING_DP * density).toInt()
-        if (isCompact) {
-            val windowWidth = (BubbleChromeGeometry.RECORDING_WINDOW_WIDTH_DP * density).toInt()
-            val windowHeight = (BubbleChromeGeometry.RECORDING_WINDOW_HEIGHT_DP * density).toInt()
-            lp.width = windowWidth
-            lp.height = windowHeight
-            lp.x = if (dragSnapHandler.isSnappedToRight) {
-                (displayMetrics.widthPixels - windowWidth - edgeMarginPx + windowPaddingPx).coerceAtLeast(0)
-            } else {
-                (edgeMarginPx - windowPaddingPx).coerceAtLeast(0)
-            }
+        val windowWidth = (BubbleChromeGeometry.RECORDING_WINDOW_WIDTH_DP * density).toInt()
+        val windowHeight = (BubbleChromeGeometry.RECORDING_WINDOW_HEIGHT_DP * density).toInt()
+        lp.width = windowWidth
+        lp.height = windowHeight
+        lp.x = if (dragSnapHandler.isSnappedToRight) {
+            (displayMetrics.widthPixels - windowWidth - edgeMarginPx + windowPaddingPx).coerceAtLeast(0)
         } else {
-            lp.width = WindowManager.LayoutParams.MATCH_PARENT
-            lp.height = WindowManager.LayoutParams.WRAP_CONTENT
-            lp.x = 0
+            (edgeMarginPx - windowPaddingPx).coerceAtLeast(0)
         }
         lp.gravity = Gravity.TOP or Gravity.START
         lp.flags = OVERLAY_WINDOW_FLAGS
@@ -557,39 +485,6 @@ class FloatingOverlayWindowManager(private val context: Context) {
         resetInactivityTimer()
     }
 
-    fun showScanAnimation(appName: String?, onComplete: () -> Unit) {
-        val lp = layoutParams ?: return
-        val displayMetrics = context.resources.displayMetrics
-        val screenWidth = displayMetrics.widthPixels.toFloat()
-        val screenHeight = displayMetrics.heightPixels.toFloat()
-
-        val originX = if (screenWidth > 0) (lp.x.toFloat() / screenWidth).coerceIn(0.1f, 0.9f) else 0.5f
-        val originY = if (screenHeight > 0) (lp.y.toFloat() / screenHeight).coerceIn(0.1f, 0.9f) else 0.5f
-
-        overlayScanOriginX.value = originX
-        overlayScanOriginY.value = originY
-        overlayScanningAppName.value = appName
-        overlayScanningAnimation.value = true
-
-        lp.width = WindowManager.LayoutParams.MATCH_PARENT
-        lp.height = WindowManager.LayoutParams.MATCH_PARENT
-        lp.flags = OVERLAY_WINDOW_FLAGS
-        lp.x = 0
-        lp.y = 0
-
-        try {
-            windowManager?.updateViewLayout(overlayView, lp)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error updating window layout for scan animation", e)
-        }
-
-        mainHandler.postDelayed({
-            overlayScanningAnimation.value = false
-            collapsePanel()
-            onComplete()
-        }, 1300L)
-    }
-
     fun showImmediately(trigger: String = "focus_or_restore") {
         fun apply() {
             val root = overlayView ?: return
@@ -598,10 +493,6 @@ class FloatingOverlayWindowManager(private val context: Context) {
                 !overlayRecording.value &&
                 !overlayExpanded.value
             ) {
-                return
-            }
-            if (FloatingBubbleManager.isCurrentAppSensitive.value) {
-                setViewVisibilityImmediate(root, false, BubbleHealthLog.HIDE_SENSITIVE_APP)
                 return
             }
             if (!root.isAttachedToWindow) {
@@ -619,11 +510,6 @@ class FloatingOverlayWindowManager(private val context: Context) {
     fun onKeyboardVisibilityChanged(isVisible: Boolean, isSessionActive: Boolean) {
         fun apply() {
             val root = overlayView ?: return
-            if (FloatingBubbleManager.isCurrentAppSensitive.value) {
-                setViewVisibilityImmediate(root, false, BubbleHealthLog.HIDE_SENSITIVE_APP)
-                BubbleHealthLog.cancelShowOpportunity(context, BubbleHealthLog.HIDE_SENSITIVE_APP)
-                return
-            }
             val repairActive = A11yWatchdog.repairKind.value != A11yRepairKind.NONE
             if (isVisible || repairActive) {
                 if (!root.isAttachedToWindow) {
@@ -656,7 +542,6 @@ class FloatingOverlayWindowManager(private val context: Context) {
         }
         if (root.visibility == View.VISIBLE && root.alpha >= 0.99f && root.scaleX >= 0.99f) {
             overlayBubbleVisible.value = true
-            RenderBudget.setOverlayFrameMonitoring(true)
             setOverlayRendering(true)
             return
         }
@@ -665,7 +550,6 @@ class FloatingOverlayWindowManager(private val context: Context) {
         root.scaleX = 0.92f
         root.scaleY = 0.92f
         setViewVisibilityImmediate(root, true, null)
-        logBubble(shown = true)
         root.post {
             if (root.isAttachedToWindow && root.visibility == View.VISIBLE) {
                 BubbleHealthLog.confirmBubbleVisible(context, "reveal_visible")
@@ -683,12 +567,10 @@ class FloatingOverlayWindowManager(private val context: Context) {
     private fun concealBubble(root: View, hideReason: String) {
         if (root.visibility != View.VISIBLE || isConcealing) {
             overlayBubbleVisible.value = false
-            RenderBudget.setOverlayFrameMonitoring(false)
             return
         }
         isConcealing = true
         root.animate().cancel()
-        logBubble(shown = false)
         BubbleHealthLog.cancelShowOpportunity(context, hideReason)
         lastHideReason = hideReason
         root.animate()
@@ -710,25 +592,7 @@ class FloatingOverlayWindowManager(private val context: Context) {
     @Volatile
     private var isConcealing = false
 
-    private val bubbleSignalLog = BubbleSignalLog()
-
-    private fun logBubble(shown: Boolean) {
-        if (!bubbleSignalLog.shouldLog(shown)) return
-        val signal = if (shown) {
-            FloatingBubbleManager.bubbleSignalAtElapsed
-        } else {
-            FloatingBubbleManager.bubbleHideSignalAtElapsed
-        }
-        val latency = BubbleTiming.latencyMs(signal, SystemClock.elapsedRealtime())
-        AppLogRepository.logEvent(
-            DiagnosticSource.BUBBLE,
-            if (shown) DiagnosticType.BUBBLE_SHOWN else DiagnosticType.BUBBLE_HIDDEN,
-            "latency_ms=$latency"
-        )
-    }
-
-    fun hideOverlayImmediately(reason: String = BubbleHealthLog.HIDE_SENSITIVE_APP) {
-        bubbleSignalLog.forget()
+    fun hideOverlayImmediately(reason: String) {
         mainHandler.post {
             val root = overlayView
             val wasVisibleOrPending = (root?.visibility == View.VISIBLE) ||
@@ -745,10 +609,6 @@ class FloatingOverlayWindowManager(private val context: Context) {
 
     fun restoreOverlayVisibility(isKeyboardOpen: Boolean) {
         mainHandler.post {
-            if (FloatingBubbleManager.isCurrentAppSensitive.value) {
-                overlayView?.let { setViewVisibilityImmediate(it, false, BubbleHealthLog.HIDE_SENSITIVE_APP) }
-                return@post
-            }
             val root = overlayView ?: return@post
             val repairActive = A11yWatchdog.repairKind.value != A11yRepairKind.NONE
             if (isKeyboardOpen || repairActive || overlayRecording.value || overlayExpanded.value) {
@@ -760,10 +620,6 @@ class FloatingOverlayWindowManager(private val context: Context) {
     }
 
     fun updateOverlayVisibility(isSessionActive: Boolean) {
-        if (FloatingBubbleManager.isCurrentAppSensitive.value) {
-            overlayView?.let { setViewVisibilityImmediate(it, false, BubbleHealthLog.HIDE_SENSITIVE_APP) }
-            return
-        }
         val isKeyboardOpen = FloatingBubbleManager.isKeyboardVisible.value
         val repairActive = A11yWatchdog.repairKind.value != A11yRepairKind.NONE
         val root = overlayView ?: return
@@ -780,7 +636,6 @@ class FloatingOverlayWindowManager(private val context: Context) {
 
     fun onDestroy() {
         cancelPendingAttachRetry()
-        RenderBudget.setOverlayFrameMonitoring(false)
         overlayBubbleVisible.value = false
         overlayScope?.cancel()
         overlayScope = null

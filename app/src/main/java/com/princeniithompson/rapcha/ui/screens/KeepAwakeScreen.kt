@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -78,8 +79,6 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.princeniithompson.rapcha.service.FloatingBubbleManager
-import com.princeniithompson.rapcha.service.floating.RenderBudget
-import com.princeniithompson.rapcha.service.floating.RenderModePreference
 import com.princeniithompson.rapcha.ui.protection.AccessibilityHealthState
 import com.princeniithompson.rapcha.ui.protection.DeviceHealthStatus
 import com.princeniithompson.rapcha.ui.protection.DeviceProtectionManager
@@ -113,13 +112,10 @@ fun KeepAwakeScreen(
 
     var status by remember { mutableStateOf(DeviceProtectionManager.collectStatus(context)) }
     var notifPromptAttempts by remember { mutableIntStateOf(0) }
-    val renderPreference by RenderBudget.preference.collectAsState()
-    val isLowPowerActive by RenderBudget.lowPower.collectAsState()
 
     val refreshStatus = remember(context) {
         {
             FloatingBubbleManager.checkPermissions(context)
-            RenderBudget.refresh(context, reason = "keep_awake_refresh")
             status = DeviceProtectionManager.collectStatus(context)
         }
     }
@@ -282,17 +278,6 @@ fun KeepAwakeScreen(
                         )
                     }
 
-                    item {
-                        RenderQualitySelectorCard(
-                            preference = renderPreference,
-                            isLowPowerActive = isLowPowerActive,
-                            isOnboarding = isOnboarding,
-                            onSelect = { pref ->
-                                RenderBudget.setPreference(context, pref)
-                            }
-                        )
-                    }
-
                     if (!isOnboarding) {
                         item {
                             OutlinedButton(
@@ -333,7 +318,7 @@ fun KeepAwakeScreen(
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(54.dp)
+                                .heightIn(min = 54.dp)
                                 .testTag("btn_keep_awake_continue")
                         ) {
                             Text(
@@ -834,88 +819,6 @@ private fun ServiceHealthCard(
                             }
                         }
                     }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RenderQualitySelectorCard(
-    preference: RenderModePreference,
-    isLowPowerActive: Boolean,
-    isOnboarding: Boolean,
-    onSelect: (RenderModePreference) -> Unit
-) {
-    val cardColor = if (isOnboarding) Color.White else MaterialTheme.colorScheme.surfaceContainerLow
-    val cardBorder = if (isOnboarding) {
-        BorderStroke(1.dp, Color(0xFFE5DFD5))
-    } else {
-        BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-    }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("keep_awake_render_quality_card"),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = cardColor),
-        border = cardBorder
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Tune,
-                    contentDescription = "Overlay render quality",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Text(
-                    text = "Overlay Render Quality",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = if (isOnboarding) OnboardingInkBlack else MaterialTheme.colorScheme.onSurface
-                )
-            }
-            Text(
-                text = if (isLowPowerActive) {
-                    "Currently active: Light mode (reduces blur & animation work on low-RAM or battery saver devices)"
-                } else {
-                    "Currently active: Full visuals"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = if (isOnboarding) OnboardingMutedText else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            RenderModePreference.entries.forEach { mode ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .minimumInteractiveComponentSize()
-                        .clickable { onSelect(mode) }
-                        .padding(horizontal = 4.dp, vertical = 4.dp)
-                        .testTag("keep_awake_render_mode_${mode.stored}"),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
-                        selected = preference == mode,
-                        onClick = { onSelect(mode) }
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = mode.label,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (isOnboarding) OnboardingInkBlack else MaterialTheme.colorScheme.onSurface
-                    )
                 }
             }
         }

@@ -6,7 +6,6 @@ import android.content.Intent
 import com.princeniithompson.rapcha.data.AppLogRepository
 import com.princeniithompson.rapcha.data.DiagnosticType
 import com.princeniithompson.rapcha.diagnostics.BubbleHealthLog
-import com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics
 import com.princeniithompson.rapcha.service.floating.FloatingNotificationManager
 
 class BubbleBootReceiver : BroadcastReceiver() {
@@ -21,7 +20,6 @@ class BubbleBootReceiver : BroadcastReceiver() {
 
         val app = context.applicationContext ?: context
         AppLogRepository.init(app)
-        NetworkAndDeviceDiagnostics.initContext(app)
 
         if (action == Intent.ACTION_MY_PACKAGE_REPLACED) {
             BubbleHealthLog.setPostUpdateGraceWindow(app, graceMs = 15_000L)

@@ -1,6 +1,5 @@
 package com.princeniithompson.rapcha.websocket
 
-import com.princeniithompson.rapcha.ui.components.overlay.sections.FloatingTranscriptFormatter
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -77,28 +76,5 @@ class InterimPreviewMonitorTest {
         val tick = monitor.poll(9_000L, "closed")
         assertEquals(InterimPreviewMonitor.Phase.CONNECTION_LOST, tick.phase)
         assertTrue(tick.events.none { it is InterimPreviewMonitor.Event.Stall })
-    }
-
-    @Test
-    fun livePreviewShowsTheTailOfALongTranscript() {
-        val opening = "The opening sentence stays at the start of a long dictation. "
-        val ending = "The newest words are about the quarterly plan and must stay visible."
-        val text = opening + "middle ".repeat(80) + ending
-        val preview = FloatingTranscriptFormatter.livePreviewText(text, maxChars = 180)
-        assertTrue(preview.startsWith("…"))
-        assertTrue(preview.endsWith(ending))
-        assertFalse(preview.contains("opening sentence"))
-    }
-
-    @Test
-    fun polishingMessageUsesMinutesOfSpeech() {
-        assertEquals(
-            "Polishing 6 minutes of speech...",
-            InterimPreviewMonitor.polishingMessage(342)
-        )
-        assertEquals(
-            "Polishing 1 minute of speech...",
-            InterimPreviewMonitor.polishingMessage(20)
-        )
     }
 }

@@ -109,14 +109,19 @@ class RapchaAccessibilityServiceTest {
     }
 
     @Test
-    fun `injectText is blocked when Smart Safe Mode is active`() {
-        FloatingBubbleManager.updateCurrentForegroundPackage("com.chase.sig.android", null)
-        try {
-            val result = kotlinx.coroutines.runBlocking { service.injectText("Secret password") }
-            org.junit.Assert.assertFalse("Injection must be blocked when Smart Safe Mode is active", result)
-        } finally {
-            FloatingBubbleManager.updateCurrentForegroundPackage("com.google.android.keep", null)
-        }
+    fun `v25 banking apps are not blocked - IgnoredPackages keeps the v24 rules`() {
+        org.junit.Assert.assertFalse(IgnoredPackages.isIgnoredPackage(null, "com.chase.sig.android"))
+        org.junit.Assert.assertFalse(IgnoredPackages.isIgnoredPackage(null, "com.whatsapp"))
+        org.junit.Assert.assertTrue(IgnoredPackages.isIgnoredPackage(null, null))
+        org.junit.Assert.assertTrue(IgnoredPackages.isIgnoredPackage(null, " "))
+        org.junit.Assert.assertTrue(IgnoredPackages.isIgnoredPackage(null, "android"))
+        org.junit.Assert.assertTrue(IgnoredPackages.isIgnoredPackage(null, "com.android.systemui"))
+        org.junit.Assert.assertTrue(IgnoredPackages.isIgnoredPackage(null, "com.google.android.inputmethod.latin"))
+        org.junit.Assert.assertTrue(IgnoredPackages.isIgnoredPackage(null, "com.samsung.android.honeyboard"))
+        org.junit.Assert.assertTrue(IgnoredPackages.isIgnoredPackage(null, "com.touchtype.swiftkey"))
+        org.junit.Assert.assertTrue(IgnoredPackages.isIgnoredPackage(null, "com.transsion.keyboard"))
+        org.junit.Assert.assertTrue(IgnoredPackages.isIgnoredPackage(null, "com.example.ime"))
+        org.junit.Assert.assertTrue(IgnoredPackages.isIgnoredPackage(null, "com.princeniithompson.rapcha"))
     }
 
     @Test

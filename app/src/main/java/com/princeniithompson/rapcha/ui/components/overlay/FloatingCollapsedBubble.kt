@@ -1,14 +1,5 @@
 package com.princeniithompson.rapcha.ui.components.overlay
 
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -18,35 +9,28 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Icon
-import com.princeniithompson.rapcha.service.A11yRepairKind
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.State
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.princeniithompson.rapcha.R
+import com.princeniithompson.rapcha.service.A11yRepairKind
 import com.princeniithompson.rapcha.service.floating.BubbleChromeGeometry
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -54,92 +38,40 @@ import kotlinx.coroutines.launch
 import kotlin.math.hypot
 
 /**
- * Collapsed floating lifebuoy bubble with simplified 2-step AI Context Scan flow:
- * 1. Normal mode: Tap starts/stops voice typing; Long-press (>= 650ms) enters Scan Mode (Lens appearance).
- * 2. Scan mode: Single tap immediately triggers the Aurora Screen Scan.
- * 3. Context Loaded: Displays a glowing neon cyan lens/sparkle badge.
+ * v25 lean collapsed lifebuoy bubble. Static (no pulse or size animation).
+ * Tap starts voice typing, drag moves it, a long press calls [onLongPress].
+ * Shows a static tint while recording, an amber ring after a clipboard fallback,
+ * and a repair badge when accessibility needs attention.
  */
 @Composable
 fun FloatingCollapsedBubble(
     isRecording: Boolean,
     isShrunk: Boolean = false,
     isSnappedToRight: Boolean = true,
-    isScanMode: Boolean = false,
-    isContextLoaded: Boolean = false,
-    bubbleVisible: Boolean = true,
-    lowPower: Boolean = false,
     repairKind: A11yRepairKind = A11yRepairKind.NONE,
     onRepairClick: () -> Unit = {},
     onClick: () -> Unit,
     onLongPress: () -> Unit = {},
-    onScanTriggered: () -> Unit = {},
     onDragStart: () -> Unit = {},
     onDrag: (Float, Float) -> Unit = { _, _ -> },
     onDragEnd: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val palette = rememberDynamicAuroraPalette()
     val isNetworkProblem by com.princeniithompson.rapcha.service.FloatingBubbleManager.isNetworkProblem.collectAsState()
     val isClipboardFallback by com.princeniithompson.rapcha.service.FloatingBubbleManager.isClipboardFallbackIndicator.collectAsState()
 
-    // v23: the pulse is only drawn while recording, in scan mode, or on the clipboard-fallback
-    // ring. v22 ran it on every idle frame even when nothing used it. The value is now read only
-    // in the draw/layer phase (no recomposition per frame). Same timings and look.
-    val pulseDrawn = isRecording || isScanMode || (isClipboardFallback && !lowPower)
-    val animatePulse = bubbleVisible && pulseDrawn && (!lowPower || isRecording || isScanMode) &&
-        !com.princeniithompson.rapcha.core.LiteMode.enabled // v24 Lite: static bubble
-    val pulseState: State<Float> = if (animatePulse) {
-        val infiniteTransition = rememberInfiniteTransition(label = "collapsedGlow")
-        infiniteTransition.animateFloat(
-            initialValue = 0.85f,
-            targetValue = 1.15f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(if (lowPower) 1800 else 1200, easing = FastOutSlowInEasing),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "pulse"
-        )
-    } else {
-        StaticPulse
-    }
-
     val baseBubbleSize = BubbleChromeGeometry.CIRCLE_SIZE_DP.dp
-
-    val animatedBubbleSize by animateDpAsState(
-        targetValue = when {
-            isScanMode -> 62.dp
-            isShrunk -> 38.dp
-            else -> baseBubbleSize
-        },
-        animationSpec = spring(
-            dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
-            stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
-        ),
-        label = "bubbleSize"
-    )
-
-    val animatedImageSize by animateDpAsState(
-        targetValue = if (isShrunk) 34.dp else baseBubbleSize,
-        animationSpec = spring(
-            dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy,
-            stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
-        ),
-        label = "imageSize"
-    )
-
-    val animatedAlpha by animateFloatAsState(
-        targetValue = if (isShrunk && !isScanMode) 0.85f else 1.0f,
-        animationSpec = tween(300),
-        label = "bubbleAlpha"
-    )
-
-    val windowSize = if (isScanMode) 64.dp else BubbleChromeGeometry.IDLE_WINDOW_SIZE_DP.dp
+    val bubbleSize = if (isShrunk) 38.dp else baseBubbleSize
+    val imageSize = if (isShrunk) 34.dp else baseBubbleSize
+    val imageAlpha = if (isShrunk) 0.85f else 1.0f
+    val windowSize = BubbleChromeGeometry.IDLE_WINDOW_SIZE_DP.dp
 
     Box(
         modifier = modifier
             .size(windowSize)
             .padding(BubbleChromeGeometry.WINDOW_PADDING_DP.dp)
-            .pointerInput(isScanMode) {
+            .testTag("collapsed_bubble")
+            .pointerInput(repairKind) {
                 coroutineScope {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
@@ -167,11 +99,7 @@ fun FloatingCollapsedBubble(
                                 } else if (!isLongPressTriggered) {
                                     if (repairKind != A11yRepairKind.NONE) {
                                         onRepairClick()
-                                    } else if (isScanMode) {
-                                        // Tap in Scan Mode -> immediately trigger screen scan
-                                        onScanTriggered()
                                     } else {
-                                        // Tap in Normal Mode -> open popup/start voice typing
                                         onClick()
                                     }
                                 }
@@ -202,83 +130,29 @@ fun FloatingCollapsedBubble(
     ) {
         Box(
             modifier = Modifier
-                .size(animatedBubbleSize)
+                .size(bubbleSize)
                 .clip(CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            if (isScanMode) {
-                // 1. Scanning Lens Mode: Glowing pulsing cyan/aurora halo with focus reticle
-                Canvas(modifier = Modifier.size(animatedBubbleSize)) {
-                    val center = Offset(size.width / 2f, size.height / 2f)
-                    val radius = size.minDimension / 2f - 3.dp.toPx()
-
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                Color(0x6600E5FF),
-                                Color(0x332979FF),
-                                Color(0x00000000)
-                            ),
-                            center = center,
-                            radius = radius * 1.3f
-                        ),
-                        radius = radius * 1.2f,
-                        center = center
-                    )
-
-                    drawCircle(
-                        brush = Brush.sweepGradient(
-                            colors = listOf(
-                                Color(0xFF00E5FF),
-                                Color(0xFF2979FF),
-                                Color(0xFF7C4DFF),
-                                Color(0xFF00E5FF)
-                            )
-                        ),
-                        radius = radius,
-                        center = center,
-                        style = Stroke(width = 3.5.dp.toPx())
-                    )
-                }
-
-                Icon(
-                    imageVector = Icons.Filled.CenterFocusStrong,
-                    contentDescription = "Context Scanning Lens (Tap to Scan)",
-                    tint = Color(0xFF00E5FF),
-                    modifier = Modifier
-                        .size(30.dp)
-                        .graphicsLayer {
-                            val p = pulseState.value
-                            scaleX = p
-                            scaleY = p
-                        }
-                )
-            } else {
-                // 2. Standard Lifebuoy Bubble
                 if (isRecording) {
                     val recordingGlow = if (isNetworkProblem) {
                         Color(0xFFFF3B30).copy(alpha = 0.55f)
                     } else {
-                        palette.primaryVibrant.copy(alpha = 0.35f)
+                        Color(0xFF10B981).copy(alpha = 0.35f)
                     }
                     Box(
                         modifier = Modifier
-                            .size(animatedBubbleSize * 0.95f)
-                            .graphicsLayer {
-                                val p = pulseState.value
-                                scaleX = p
-                                scaleY = p
-                            }
+                            .size(bubbleSize * 0.95f)
                             .background(recordingGlow, CircleShape)
                     )
                 }
                 if (isClipboardFallback) {
-                    Canvas(modifier = Modifier.size(animatedBubbleSize)) {
+                    Canvas(modifier = Modifier.size(bubbleSize)) {
                         val center = Offset(size.width / 2f, size.height / 2f)
                         val radius = size.minDimension / 2f - 2.dp.toPx()
                         drawCircle(
                             color = Color(0xFFD29922).copy(alpha = 0.35f),
-                            radius = radius * 1.15f * pulseState.value,
+                            radius = radius * 1.15f,
                             center = center
                         )
                         drawCircle(
@@ -295,7 +169,7 @@ fun FloatingCollapsedBubble(
                     } else {
                         Color(0xFFD29922)
                     }
-                    Canvas(modifier = Modifier.size(animatedBubbleSize)) {
+                    Canvas(modifier = Modifier.size(bubbleSize)) {
                         val center = Offset(size.width / 2f, size.height / 2f)
                         val radius = size.minDimension / 2f - 2.dp.toPx()
                         drawCircle(
@@ -312,7 +186,7 @@ fun FloatingCollapsedBubble(
                     }
                 }
                 Box(
-                    modifier = Modifier.size(animatedImageSize),
+                    modifier = Modifier.size(imageSize),
                     contentAlignment = Alignment.Center
                 ) {
                     Image(
@@ -322,7 +196,7 @@ fun FloatingCollapsedBubble(
                         } else {
                             "Floating voice bubble"
                         },
-                        alpha = animatedAlpha,
+                        alpha = imageAlpha,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -349,29 +223,7 @@ fun FloatingCollapsedBubble(
                             modifier = Modifier.size(11.dp)
                         )
                     }
-                } else if (isContextLoaded) {
-                    // 3. AI Context Loaded Badge (Neon Cyan Sparkle Ring on top-right)
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .offset(x = (-2).dp, y = 2.dp)
-                            .size(16.dp)
-                            .background(Color(0xFF0A192F), CircleShape)
-                            .border(1.5.dp, Color(0xFF00E5FF), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.AutoAwesome,
-                            contentDescription = "AI Context Loaded",
-                            tint = Color(0xFF00E5FF),
-                            modifier = Modifier.size(10.dp)
-                        )
-                    }
                 }
-            }
         }
     }
 }
-
-/** v23: constant pulse used when no animation is needed (no per-frame state). */
-private val StaticPulse: State<Float> = androidx.compose.runtime.mutableFloatStateOf(1f)

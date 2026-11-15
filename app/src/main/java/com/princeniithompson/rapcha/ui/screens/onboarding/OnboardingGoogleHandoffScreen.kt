@@ -126,7 +126,7 @@ fun OnboardingGoogleHandoffScreen(
                     ),
                     modifier = Modifier
                         .widthIn(min = 200.dp, max = 280.dp)
-                        .height(52.dp)
+                        .heightIn(min = 52.dp)
                         .testTag("btn_open_rapcha")
                 ) {
                     Text(

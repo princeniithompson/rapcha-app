@@ -33,7 +33,6 @@ class FloatingDragSnapHandler(private val context: Context) {
         private set
 
     private var snapAnimator: ValueAnimator? = null
-    private var lastMoveVibrateTime = 0L
 
     init {
         loadPreferences()
@@ -122,12 +121,6 @@ class FloatingDragSnapHandler(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error updating overlay layout during drag", e)
         }
-
-        val now = System.currentTimeMillis()
-        if (now - lastMoveVibrateTime > 75) {
-            lastMoveVibrateTime = now
-            FloatingHapticManager.trigger(context, FloatingHapticType.BUBBLE_MOVE)
-        }
     }
 
     fun handleOverlayDragEnd(
@@ -207,7 +200,6 @@ class FloatingDragSnapHandler(private val context: Context) {
 
                         if (lastBounceImpactIndex < 0 && fraction >= t0 * 0.92f) {
                             lastBounceImpactIndex = 0
-                            FloatingHapticManager.trigger(context, FloatingHapticType.BUBBLE_SETTLE)
                         }
                     } else {
                         mainProgress = 1.0f
@@ -216,21 +208,18 @@ class FloatingDragSnapHandler(private val context: Context) {
                             reboundOffset = amp1 * sin(u * Math.PI).toFloat()
                             if (lastBounceImpactIndex < 1 && fraction >= (t0 + (t1 - t0) * 0.90f)) {
                                 lastBounceImpactIndex = 1
-                                FloatingHapticManager.trigger(context, FloatingHapticType.BUBBLE_SETTLE)
                             }
                         } else if (fraction <= t2) {
                             val u = (fraction - t1) / (t2 - t1)
                             reboundOffset = amp2 * sin(u * Math.PI).toFloat()
                             if (lastBounceImpactIndex < 2 && fraction >= (t1 + (t2 - t1) * 0.90f)) {
                                 lastBounceImpactIndex = 2
-                                FloatingHapticManager.trigger(context, FloatingHapticType.BUBBLE_SETTLE)
                             }
                         } else {
                             val u = (fraction - t2) / (1.0f - t2)
                             reboundOffset = amp3 * sin(u * Math.PI).toFloat()
                             if (lastBounceImpactIndex < 3 && fraction >= (t2 + (1.0f - t2) * 0.90f)) {
                                 lastBounceImpactIndex = 3
-                                FloatingHapticManager.trigger(context, FloatingHapticType.BUBBLE_SETTLE)
                             }
                         }
                     }
@@ -266,7 +255,6 @@ class FloatingDragSnapHandler(private val context: Context) {
                         } catch (e: Exception) {
                             Log.w(TAG, "Failed final layout update", e)
                         }
-                        FloatingHapticManager.trigger(context, FloatingHapticType.BUBBLE_SETTLE)
                     }
                 })
                 start()
@@ -289,7 +277,6 @@ class FloatingDragSnapHandler(private val context: Context) {
             } catch (e: Exception) {
                 Log.w(TAG, "Failed updating compact layout after drag end", e)
             }
-            FloatingHapticManager.trigger(context, FloatingHapticType.BUBBLE_SETTLE)
         } else {
             lp.x = 0
             savedY = lp.y
@@ -299,7 +286,6 @@ class FloatingDragSnapHandler(private val context: Context) {
             } catch (e: Exception) {
                 Log.w(TAG, "Failed updating expanded layout after drag end", e)
             }
-            FloatingHapticManager.trigger(context, FloatingHapticType.BUBBLE_SETTLE)
         }
 
         onComplete()
