@@ -13,8 +13,8 @@ android {
     applicationId = "com.princeniithompson.rapcha"
     minSdk = 24
     targetSdk = 36
-    versionCode = 26
-    versionName = "lean-26"
+    versionCode = 27
+    versionName = "lean-27"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

@@ -46,7 +46,7 @@ import org.robolectric.annotation.GraphicsMode
 /**
  * v26: the restored v24 Home (both bubble pages with the Active marker), the onboarding voice
  * test (microphone step), and Settings with the Smart Mode switch, at font scale 1.0, 1.6 and
- * 2.0. Images go to /workspace/rapcha-v26-shots when run with -Proborazzi.test.record=true.
+ * 2.0. Images go to /workspace/rapcha-v27-shots when run with -Proborazzi.test.record=true.
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -55,7 +55,7 @@ class FontScaleScreenshotTest {
     @get:Rule
     val rule = createAndroidComposeRule<ComponentActivity>()
 
-    private val shots = System.getProperty("rapcha.shots.dir") ?: "/workspace/rapcha-v26-shots"
+    private val shots = System.getProperty("rapcha.shots.dir") ?: "/workspace/rapcha-v27-shots"
 
     private fun show(fontScale: Float, content: @Composable () -> Unit) {
         rule.setContent {

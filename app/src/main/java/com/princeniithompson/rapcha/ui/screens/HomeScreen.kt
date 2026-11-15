@@ -352,7 +352,8 @@ private fun TopCarouselSection(
                         caption = "Shows your words as you speak",
                         active = activeChrome == BubbleChromeStyle.ORIGINAL,
                         animating = pagerState.currentPage == page,
-                        onChoose = { onChooseChrome(BubbleChromeStyle.ORIGINAL) }
+                        onChoose = { onChooseChrome(BubbleChromeStyle.ORIGINAL) },
+                        isDark = isDark
                     )
                     HomeCarouselPolicy.PAGE_MINI_BUBBLE -> BubbleChoicePage(
                         style = BubbleChromeStyle.COMPACT,
@@ -360,7 +361,8 @@ private fun TopCarouselSection(
                         caption = "A small pill with a timer",
                         active = activeChrome == BubbleChromeStyle.COMPACT,
                         animating = pagerState.currentPage == page,
-                        onChoose = { onChooseChrome(BubbleChromeStyle.COMPACT) }
+                        onChoose = { onChooseChrome(BubbleChromeStyle.COMPACT) },
+                        isDark = isDark
                     )
                     HomeCarouselPolicy.PAGE_WORDS_SPOKEN -> StatCardView(
                         statNumber = "$formattedWords words",
@@ -438,7 +440,8 @@ private fun BubbleChoicePage(
     caption: String,
     active: Boolean,
     animating: Boolean,
-    onChoose: () -> Unit
+    onChoose: () -> Unit,
+    isDark: Boolean = false
 ) {
     val key = if (style == BubbleChromeStyle.COMPACT) "mini" else "words"
     Card(
@@ -446,11 +449,16 @@ private fun BubbleChoicePage(
             .fillMaxSize()
             .testTag("bubble_page_$key"),
         shape = RoundedCornerShape(26.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF16151F)),
-        border = BorderStroke(
-            if (active) 2.dp else 1.dp,
-            if (active) MaterialTheme.colorScheme.primary else Color(0xFF262433)
+        // v27: same card as the stats pages (white in light mode, no border); the active
+        // bubble keeps its primary outline so the choice stays visible.
+        colors = CardDefaults.cardColors(
+            containerColor = if (isDark) Color(0xFF16151F) else Color.White
         ),
+        border = when {
+            active -> BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+            isDark -> BorderStroke(1.dp, Color(0xFF262433))
+            else -> null
+        },
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -462,7 +470,7 @@ private fun BubbleChoicePage(
             ) {
                 Text(
                     text = title,
-                    color = Color.White,
+                    color = if (isDark) Color(0xFFF1F5F9) else Color(0xFF1A202C),
                     fontSize = 16.sp,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f)
@@ -503,7 +511,7 @@ private fun BubbleChoicePage(
             }
             Text(
                 text = caption,
-                color = Color(0xFFCBD5E1),
+                color = if (isDark) Color(0xFFCBD5E1) else Color(0xFF4A5568),
                 fontSize = 12.5.sp,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,

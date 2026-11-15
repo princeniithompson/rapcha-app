@@ -6,7 +6,7 @@ Rapcha is an Android floating dictation bubble. You tap the bubble, speak, and R
 
 ![Rapcha floating dictation](docs/assets/rapcha-hero.png)
 
-**Current version:** 26 (`lean-26`), package `com.princeniithompson.rapcha`. Not on the Play Store yet. Runs on Android 7.0+ (minSdk 24) and is tested for Android 11 (API 30) phones such as the Infinix Hot 11.
+**Current version:** 27 (`lean-27`), package `com.princeniithompson.rapcha`. Not on the Play Store yet. Runs on Android 7.0+ (minSdk 24) and is tested for Android 11 (API 30) phones such as the Infinix Hot 11.
 
 ## What it does
 
