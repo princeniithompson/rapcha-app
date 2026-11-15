@@ -69,6 +69,15 @@ class VoiceTypingViewModel(application: Application) : AndroidViewModel(applicat
         com.princeniithompson.rapcha.service.FloatingBubbleManager.init(application)
     }
 
+    private val _isSmartMode = MutableStateFlow(com.princeniithompson.rapcha.core.SmartModeSetting.isEnabled(application))
+    /** Smart Mode (Smart polish). Default ON. Read by the bubble service at the start of each dictation. */
+    val isSmartMode: StateFlow<Boolean> = _isSmartMode.asStateFlow()
+
+    fun setSmartMode(enabled: Boolean) {
+        _isSmartMode.value = enabled
+        com.princeniithompson.rapcha.core.SmartModeSetting.setEnabled(getApplication(), enabled)
+    }
+
     val isOnboardingCompleted: StateFlow<Boolean> = com.princeniithompson.rapcha.data.OnboardingRepository.isOnboardingCompleted
 
     fun completeOnboarding() {

@@ -1,7 +1,65 @@
 package com.princeniithompson.rapcha.service.floating
 
 /**
- * v25 lean: the bubble is always the light, static compact pill.
+ * v26: two bubbles again. Words is the original v24 bubble (FloatingDictationPopup). Mini is the
+ * compact pill. The saved value lives in the v24 bubble_chrome_style preference
+ * (activeContainer "words" or "mini"); older "original" and "compact" values still load.
+ */
+enum class BubbleChromeStyle {
+    ORIGINAL,
+    COMPACT;
+
+    /** Persisted activeContainer. words is original, mini is compact. */
+    fun stored(): String = if (this == COMPACT) MINI else WORDS
+
+    companion object {
+        const val WORDS = "words"
+        const val MINI = "mini"
+
+        fun fromStored(value: String?): BubbleChromeStyle {
+            return when (value?.lowercase()) {
+                MINI, "compact" -> COMPACT
+                else -> ORIGINAL
+            }
+        }
+    }
+}
+
+/**
+ * Home top carousel: page 0 is the Words bubble, page 1 the Mini pill, then the stats pages.
+ * It auto-advances after 19 s idle. Moving the carousel never changes the saved bubble;
+ * only an explicit tap on a bubble page's bubble or its Use button does.
+ */
+object HomeCarouselPolicy {
+    const val IDLE_PAGE_MS = 19_000L
+    const val PAGE_WORDS_BUBBLE = 0
+    const val PAGE_MINI_BUBBLE = 1
+    const val PAGE_WORDS_SPOKEN = 2
+    const val PAGE_WPM = 3
+    const val PAGE_COUNT = 4
+
+    fun nextPage(settledPage: Int): Int = (settledPage + 1) % PAGE_COUNT
+
+    fun shouldAutoAdvance(idle: Boolean, userInteracting: Boolean): Boolean = idle && !userInteracting
+
+    fun styleForPage(page: Int): BubbleChromeStyle? = when (page) {
+        PAGE_WORDS_BUBBLE -> BubbleChromeStyle.ORIGINAL
+        PAGE_MINI_BUBBLE -> BubbleChromeStyle.COMPACT
+        else -> null
+    }
+
+    fun pageFor(style: BubbleChromeStyle): Int =
+        if (style == BubbleChromeStyle.COMPACT) PAGE_MINI_BUBBLE else PAGE_WORDS_BUBBLE
+
+    /** The saved bubble after the carousel moves. Only an explicit choice changes it. */
+    fun styleAfter(current: BubbleChromeStyle, page: Int, explicitChoice: Boolean): BubbleChromeStyle {
+        if (!explicitChoice) return current
+        return styleForPage(page) ?: current
+    }
+}
+
+/**
+ * The compact pill.
  * Compact sizes are taken from the phone screenshot at about 2.6 px/dp.
  * Cancel 48dp, pill 90x48dp, Complete 48dp, gaps 5dp.
  */

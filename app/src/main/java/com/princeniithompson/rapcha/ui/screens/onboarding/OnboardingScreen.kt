@@ -113,7 +113,9 @@ fun OnboardingScreen(
             stage == OnboardingStage.GOOGLE_AUTH_HANDOFF -> stage = OnboardingStage.GOOGLE_SIGN_IN
             stage == OnboardingStage.INTRO -> stage = OnboardingStage.WELCOME_HERO
             stage == OnboardingStage.HOW_IT_WORKS -> stage = OnboardingStage.INTRO
-            stage == OnboardingStage.OVERLAY_PERMISSION -> stage = OnboardingStage.HOW_IT_WORKS
+            stage == OnboardingStage.SANDBOX -> stage = OnboardingStage.HOW_IT_WORKS
+            stage == OnboardingStage.APPS_SHOWCASE -> stage = OnboardingStage.SANDBOX
+            stage == OnboardingStage.OVERLAY_PERMISSION -> stage = OnboardingStage.APPS_SHOWCASE
             stage == OnboardingStage.KEEP_AWAKE -> stage = OnboardingStage.OVERLAY_PERMISSION
             stage == OnboardingStage.ACCESSIBILITY_GUIDE -> stage = OnboardingStage.KEEP_AWAKE
             stage == OnboardingStage.NOTIFICATION_PERMISSION ||
@@ -184,6 +186,8 @@ fun OnboardingScreen(
 
                 OnboardingStage.INTRO,
                 OnboardingStage.HOW_IT_WORKS,
+                OnboardingStage.SANDBOX,
+                OnboardingStage.APPS_SHOWCASE,
                 OnboardingStage.OVERLAY_PERMISSION,
                 OnboardingStage.KEEP_AWAKE,
                 OnboardingStage.ACCESSIBILITY_GUIDE,
@@ -203,7 +207,7 @@ fun OnboardingScreen(
                         ) {
                             OnboardingTopBar(
                                 currentSegment = stage.progressIndex,
-                                totalSegments = 6
+                                totalSegments = 8
                             )
 
                             when (stage) {
@@ -215,6 +219,19 @@ fun OnboardingScreen(
 
                                 OnboardingStage.HOW_IT_WORKS -> {
                                     OnboardingHowItWorksScreen(
+                                        onNext = { stage = OnboardingStage.SANDBOX }
+                                    )
+                                }
+
+                                OnboardingStage.SANDBOX -> {
+                                    OnboardingSandboxScreen(
+                                        viewModel = viewModel,
+                                        onComplete = { stage = OnboardingStage.APPS_SHOWCASE }
+                                    )
+                                }
+
+                                OnboardingStage.APPS_SHOWCASE -> {
+                                    OnboardingAppsShowcaseScreen(
                                         onNext = { stage = OnboardingStage.OVERLAY_PERMISSION }
                                     )
                                 }

@@ -66,6 +66,51 @@ class GeminiLiveWebSocketClient(
         private const val SLOW_WS_HANDSHAKE_MS = 3_000L
 
         /**
+         * The Live setup message. Smart Mode ON adds inputAudioTranscription.mode = "SMART"
+         * (clean punctuation and filler removal on gemini-3.5-transcribe-live). OFF leaves the mode
+         * out, so the server returns the raw verbatim transcript, as v24 did.
+         */
+        fun buildSetupMessage(model: String, smartMode: Boolean, customVocabulary: List<String>): JSONObject {
+            val transcriptionConfig = JSONObject().apply {
+                if (smartMode) {
+                    put("mode", "SMART")
+                }
+                if (customVocabulary.isNotEmpty()) {
+                    val vocabArray = org.json.JSONArray()
+                    customVocabulary.forEach { term ->
+                        val trimmed = term.trim()
+                        if (trimmed.isNotEmpty()) vocabArray.put(trimmed)
+                    }
+                    put("customVocabulary", vocabArray)
+                }
+            }
+            val systemPromptText = buildString {
+                append(DICTATION_SYSTEM_PROMPT)
+                append(TranscriptAcceptance.vocabularyClause(customVocabulary))
+            }
+            val setupJson = JSONObject().apply {
+                put("setup", JSONObject().apply {
+                    put("model", model)
+                    put("systemInstruction", JSONObject().apply {
+                        put("parts", org.json.JSONArray().apply {
+                            put(JSONObject().apply { put("text", systemPromptText) })
+                        })
+                    })
+                    put("generationConfig", JSONObject().apply {
+                        put("responseModalities", org.json.JSONArray().apply { put("TEXT") })
+                    })
+                    put("inputAudioTranscription", transcriptionConfig)
+                    put("realtimeInputConfig", JSONObject().apply {
+                        put("automaticActivityDetection", JSONObject().apply {
+                            put("disabled", true)
+                        })
+                    })
+                })
+            }
+            return setupJson
+        }
+
+        /**
          * v25: the old prompt told the model to ignore "background conversations", which made
          * it drop the user's own soft one- or two-word phrases when other people were near.
          * The speaker closest to the microphone is always transcribed, however quietly.
@@ -1081,42 +1126,7 @@ class GeminiLiveWebSocketClient(
     }
 
     private fun sendSetup(socket: WebSocket) {
-        val transcriptionConfig = JSONObject().apply {
-            if (isSmartMode) {
-                put("mode", "SMART")
-            }
-            if (customVocabularyList.isNotEmpty()) {
-                val vocabArray = org.json.JSONArray()
-                customVocabularyList.forEach { term ->
-                    val trimmed = term.trim()
-                    if (trimmed.isNotEmpty()) vocabArray.put(trimmed)
-                }
-                put("customVocabulary", vocabArray)
-            }
-        }
-        val systemPromptText = buildString {
-            append(DICTATION_SYSTEM_PROMPT)
-            append(TranscriptAcceptance.vocabularyClause(customVocabularyList))
-        }
-        val setupJson = JSONObject().apply {
-            put("setup", JSONObject().apply {
-                put("model", activeModel)
-                put("systemInstruction", JSONObject().apply {
-                    put("parts", org.json.JSONArray().apply {
-                        put(JSONObject().apply { put("text", systemPromptText) })
-                    })
-                })
-                put("generationConfig", JSONObject().apply {
-                    put("responseModalities", org.json.JSONArray().apply { put("TEXT") })
-                })
-                put("inputAudioTranscription", transcriptionConfig)
-                put("realtimeInputConfig", JSONObject().apply {
-                    put("automaticActivityDetection", JSONObject().apply {
-                        put("disabled", true)
-                    })
-                })
-            })
-        }
+        val setupJson = buildSetupMessage(activeModel, isSmartMode, customVocabularyList)
         val payload = setupJson.toString()
         val sent = socket.send(payload)
         if (sent) {

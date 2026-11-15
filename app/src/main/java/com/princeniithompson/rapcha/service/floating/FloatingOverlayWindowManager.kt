@@ -89,6 +89,10 @@ class FloatingOverlayWindowManager(private val context: Context) {
     val overlayExpanded = MutableStateFlow(false)
     val overlayShrunk = MutableStateFlow(false)
     val overlayBubbleVisible = MutableStateFlow(false)
+    /** Live transcript for the Words bubble. */
+    val overlayTranscript = MutableStateFlow("")
+    /** 0..1 voice level that drives the glow. */
+    val overlayAudioAmplitude = MutableStateFlow(0f)
 
     private val shrinkRunnable = Runnable { applyShrink() }
 
@@ -187,6 +191,9 @@ class FloatingOverlayWindowManager(private val context: Context) {
                 val isShrunk by overlayShrunk.collectAsState()
                 val elapsedSeconds by overlayElapsedSeconds.collectAsState()
                 val repairKind by A11yWatchdog.repairKind.collectAsState()
+                val transcript by overlayTranscript.collectAsState()
+                val audioAmplitude by overlayAudioAmplitude.collectAsState()
+                val bubbleVisible by overlayBubbleVisible.collectAsState()
 
                 FloatingOverlayContent(
                     recording = recording,
@@ -195,6 +202,9 @@ class FloatingOverlayWindowManager(private val context: Context) {
                     isShrunk = isShrunk,
                     isSnappedToRight = dragSnapHandler.isSnappedToRight,
                     elapsedSeconds = elapsedSeconds,
+                    transcript = transcript,
+                    audioAmplitude = audioAmplitude,
+                    bubbleVisible = bubbleVisible,
                     repairKind = repairKind,
                     onRepairClick = onRepairClick,
                     onRingClick = onRingClick,
@@ -243,6 +253,14 @@ class FloatingOverlayWindowManager(private val context: Context) {
         overlayScope?.cancel()
         val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
         overlayScope = scope
+        scope.launch {
+            // Re-lay out the window when the active bubble changes during a session.
+            FloatingBubbleManager.bubbleChrome.collect {
+                if (overlayExpanded.value) {
+                    expandPanel()
+                }
+            }
+        }
         scope.launch {
             A11yWatchdog.repairKind.collect { kind ->
                 if (kind != A11yRepairKind.NONE) {
@@ -414,17 +432,24 @@ class FloatingOverlayWindowManager(private val context: Context) {
         val topY = (36 * density).toInt()
         val maxY = (screenHeight - (320 * density).toInt()).coerceAtLeast(topY + (60 * density).toInt())
 
-        // v25 lean: always the compact pill.
+        // v26: Words is a full-width container; Mini is the fixed-size compact pill.
+        val isCompact = FloatingBubbleManager.bubbleChrome.value == BubbleChromeStyle.COMPACT
         val edgeMarginPx = (BubbleChromeGeometry.EDGE_MARGIN_DP * density).toInt()
         val windowPaddingPx = (BubbleChromeGeometry.WINDOW_PADDING_DP * density).toInt()
-        val windowWidth = (BubbleChromeGeometry.RECORDING_WINDOW_WIDTH_DP * density).toInt()
-        val windowHeight = (BubbleChromeGeometry.RECORDING_WINDOW_HEIGHT_DP * density).toInt()
-        lp.width = windowWidth
-        lp.height = windowHeight
-        lp.x = if (dragSnapHandler.isSnappedToRight) {
-            (displayMetrics.widthPixels - windowWidth - edgeMarginPx + windowPaddingPx).coerceAtLeast(0)
+        if (isCompact) {
+            val windowWidth = (BubbleChromeGeometry.RECORDING_WINDOW_WIDTH_DP * density).toInt()
+            val windowHeight = (BubbleChromeGeometry.RECORDING_WINDOW_HEIGHT_DP * density).toInt()
+            lp.width = windowWidth
+            lp.height = windowHeight
+            lp.x = if (dragSnapHandler.isSnappedToRight) {
+                (displayMetrics.widthPixels - windowWidth - edgeMarginPx + windowPaddingPx).coerceAtLeast(0)
+            } else {
+                (edgeMarginPx - windowPaddingPx).coerceAtLeast(0)
+            }
         } else {
-            (edgeMarginPx - windowPaddingPx).coerceAtLeast(0)
+            lp.width = WindowManager.LayoutParams.MATCH_PARENT
+            lp.height = WindowManager.LayoutParams.WRAP_CONTENT
+            lp.x = 0
         }
         lp.gravity = Gravity.TOP or Gravity.START
         lp.flags = OVERLAY_WINDOW_FLAGS

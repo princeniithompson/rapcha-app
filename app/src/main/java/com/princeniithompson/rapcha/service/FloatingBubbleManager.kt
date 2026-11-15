@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.asStateFlow
 object FloatingBubbleManager {
     private const val TAG = "FloatingBubbleManager"
     private const val PREFS_NAME = "voxstream_bubble_prefs"
+    /** Saved activeContainer: "words" (original bubble) or "mini" (compact pill). Same key as v24. */
+    const val KEY_BUBBLE_CHROME = "bubble_chrome_style"
     private const val KEY_BUBBLE_ENABLED = "bubble_enabled"
 
     private val _isBubbleEnabled = MutableStateFlow(false)
@@ -66,12 +68,36 @@ object FloatingBubbleManager {
         _isNetworkProblem.value = hasProblem
     }
 
+    private val _bubbleChrome = MutableStateFlow(com.princeniithompson.rapcha.service.floating.BubbleChromeStyle.ORIGINAL)
+    /** The active floating bubble. Drives the live overlay and the Active chip on Home. */
+    val bubbleChrome: StateFlow<com.princeniithompson.rapcha.service.floating.BubbleChromeStyle> = _bubbleChrome.asStateFlow()
+    private var chromeLoaded = false
+
+    /** Loads the saved bubble once per process. Called by the UI and by the bubble service. */
+    fun loadBubbleChrome(context: Context) {
+        if (chromeLoaded) return
+        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        _bubbleChrome.value = com.princeniithompson.rapcha.service.floating.BubbleChromeStyle.fromStored(
+            prefs.getString(KEY_BUBBLE_CHROME, null)
+        )
+        chromeLoaded = true
+    }
+
+    /** Only an explicit choice on Home calls this. Swiping or auto-scroll never does. */
+    fun setBubbleChrome(context: Context, style: com.princeniithompson.rapcha.service.floating.BubbleChromeStyle) {
+        chromeLoaded = true
+        _bubbleChrome.value = style
+        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putString(KEY_BUBBLE_CHROME, style.stored()).apply()
+    }
+
     private var initialized = false
 
     fun init(context: Context) {
         if (initialized) return
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         _isBubbleEnabled.value = prefs.getBoolean(KEY_BUBBLE_ENABLED, false)
+        loadBubbleChrome(context)
         initialized = true
         checkPermissions(context)
 

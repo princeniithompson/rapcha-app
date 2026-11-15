@@ -38,4 +38,43 @@ class BubbleChromeTest {
         assertEquals("Offline", compactPillLabel(finishing = false, networkProblem = true))
         assertEquals("Finishing", compactPillLabel(finishing = true, networkProblem = true))
     }
+
+    @Test
+    fun `active container is stored as words or mini`() {
+        assertEquals("words", BubbleChromeStyle.ORIGINAL.stored())
+        assertEquals("mini", BubbleChromeStyle.COMPACT.stored())
+        assertEquals(BubbleChromeStyle.COMPACT, BubbleChromeStyle.fromStored("mini"))
+        assertEquals(BubbleChromeStyle.COMPACT, BubbleChromeStyle.fromStored("compact"))
+        assertEquals(BubbleChromeStyle.ORIGINAL, BubbleChromeStyle.fromStored("words"))
+        assertEquals(BubbleChromeStyle.ORIGINAL, BubbleChromeStyle.fromStored(null))
+        assertEquals(BubbleChromeStyle.ORIGINAL, BubbleChromeStyle.fromStored("garbage"))
+    }
+
+    @Test
+    fun `swiping or auto scrolling never changes the chosen bubble`() {
+        for (current in BubbleChromeStyle.values()) {
+            for (page in 0 until HomeCarouselPolicy.PAGE_COUNT) {
+                assertEquals(current, HomeCarouselPolicy.styleAfter(current, page, explicitChoice = false))
+            }
+        }
+        assertEquals(BubbleChromeStyle.COMPACT,
+            HomeCarouselPolicy.styleAfter(BubbleChromeStyle.ORIGINAL, HomeCarouselPolicy.PAGE_MINI_BUBBLE, true))
+        assertEquals(BubbleChromeStyle.ORIGINAL,
+            HomeCarouselPolicy.styleAfter(BubbleChromeStyle.COMPACT, HomeCarouselPolicy.PAGE_WORDS_BUBBLE, true))
+        // Choosing on a stats page keeps the current bubble.
+        assertEquals(BubbleChromeStyle.COMPACT,
+            HomeCarouselPolicy.styleAfter(BubbleChromeStyle.COMPACT, HomeCarouselPolicy.PAGE_WPM, true))
+    }
+
+    @Test
+    fun `carousel has two bubble pages then the stats and wraps around`() {
+        assertEquals(4, HomeCarouselPolicy.PAGE_COUNT)
+        assertEquals(BubbleChromeStyle.ORIGINAL, HomeCarouselPolicy.styleForPage(0))
+        assertEquals(BubbleChromeStyle.COMPACT, HomeCarouselPolicy.styleForPage(1))
+        assertEquals(null, HomeCarouselPolicy.styleForPage(2))
+        assertEquals(0, HomeCarouselPolicy.nextPage(3))
+        assertEquals(1, HomeCarouselPolicy.pageFor(BubbleChromeStyle.COMPACT))
+        assertTrue(HomeCarouselPolicy.shouldAutoAdvance(idle = true, userInteracting = false))
+        assertFalse(HomeCarouselPolicy.shouldAutoAdvance(idle = true, userInteracting = true))
+    }
 }

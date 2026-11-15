@@ -91,6 +91,9 @@ import com.princeniithompson.rapcha.ui.screens.onboarding.EmbeddedGoogleAuthBrow
 import com.princeniithompson.rapcha.ui.screens.onboarding.provisioning.AiStudioAutomationEngine
 import com.princeniithompson.rapcha.ui.screens.onboarding.provisioning.ProvisioningStatus
 import kotlinx.coroutines.launch
+import com.princeniithompson.rapcha.data.DictationStats
+import com.princeniithompson.rapcha.data.RecentDictations
+import com.princeniithompson.rapcha.service.FloatingBubbleManager
 
 enum class MainScreenTab {
     HOME,
@@ -123,6 +126,11 @@ fun VoiceTypingScreen(
     val provisionedApiKey by viewModel.provisionedApiKey.collectAsState()
     val signedInGoogleEmail by viewModel.signedInGoogleEmail.collectAsState()
     val vocabularyList by CustomVocabularyRepository.vocabulary.collectAsState()
+    val isSmartMode by viewModel.isSmartMode.collectAsState()
+    val activeChrome by FloatingBubbleManager.bubbleChrome.collectAsState()
+    val statsTotals by DictationStats.totals.collectAsState()
+    val recentItems by RecentDictations.items.collectAsState()
+    LaunchedEffect(Unit) { DictationStats.load(context) }
     val activeApiKey = remember(customApiKey, provisionedApiKey) {
         customApiKey.ifBlank { provisionedApiKey }.trim()
     }
@@ -214,6 +222,18 @@ fun VoiceTypingScreen(
             sharedAutomationEngine = automationEngine
         )
         return
+    }
+
+    // Safety net: onboarding's voice test asks for the microphone; if it was skipped or the
+    // permission was later removed, ask once each time the app opens (Android 11 and 13+).
+    val micPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { }
+    LaunchedEffect(Unit) {
+        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!granted) micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
     }
 
     val openOverlaySettings = {
@@ -314,7 +334,9 @@ fun VoiceTypingScreen(
                                 viewModel.setBubbleEnabled(enabled)
                             },
                             onGrantOverlay = openOverlaySettings,
-                            onTurnOnAccessibility = { showAccessibilityDisclosure = true }
+                            onTurnOnAccessibility = { showAccessibilityDisclosure = true },
+                            isSmartMode = isSmartMode,
+                            onSmartModeToggle = { viewModel.setSmartMode(it) }
                         )
                     }
                 },
@@ -337,21 +359,16 @@ fun VoiceTypingScreen(
                     when (selectedTab) {
                         MainScreenTab.HOME -> {
                             HomeScreen(
-                                isBubbleEnabled = isBubbleEnabled,
-                                hasOverlayPermission = hasOverlayPermission,
-                                isAccessibilityConnected = isAccessibilityConnected,
-                                apiKeyConfigured = apiKeyConfigured,
+                                activeChrome = activeChrome,
+                                onChooseChrome = { style ->
+                                    FloatingBubbleManager.setBubbleChrome(context, style)
+                                },
+                                totals = statsTotals,
+                                recentItems = recentItems,
                                 keepAwakeNeedsFix = deviceHealthStatus.hasAnyRed,
                                 onOpenMenu = openMenu,
-                                onBubbleToggle = { enabled ->
-                                    if (enabled && !viewModel.canDrawOverlays()) {
-                                        openOverlaySettings()
-                                    }
-                                    viewModel.setBubbleEnabled(enabled)
-                                },
-                                onGrantOverlay = openOverlaySettings,
-                                onTurnOnAccessibility = { showAccessibilityDisclosure = true },
                                 onOpenKeepAwake = { showKeepAwakeScreen = true },
+                                onDeleteItem = { RecentDictations.delete(it) },
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .padding(innerPadding)
@@ -412,7 +429,9 @@ internal fun SettingsContent(
     onBubbleToggle: (Boolean) -> Unit,
     onGrantOverlay: () -> Unit,
     onTurnOnAccessibility: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isSmartMode: Boolean = true,
+    onSmartModeToggle: (Boolean) -> Unit = {}
 ) {
     Column(
         modifier = modifier
@@ -429,6 +448,42 @@ internal fun SettingsContent(
         )
         HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
         Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Smart Polish",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onSmartModeToggle(!isSmartMode) }
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .testTag("smart_mode_row"),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Smart Mode",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "On: cleans up filler words and adds punctuation. Off: raw verbatim transcript, fastest.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Switch(
+                checked = isSmartMode,
+                onCheckedChange = onSmartModeToggle,
+                modifier = Modifier.testTag("smart_mode_switch")
+            )
+        }
+        HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
 
         SettingsApiKeyCard(
             apiKey = apiKey,

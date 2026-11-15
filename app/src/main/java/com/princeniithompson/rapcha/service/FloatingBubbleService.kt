@@ -236,14 +236,24 @@ class FloatingBubbleService : Service() {
             }
         }
 
+        FloatingBubbleManager.loadBubbleChrome(this)
         overlayWindowManager = FloatingOverlayWindowManager(this)
         sessionManager = FloatingDictationSessionManager(
             context = this,
-            onTranscriptUpdated = { _ -> },
+            onTranscriptUpdated = { text ->
+                // v26: the Words bubble shows the live transcript again (memory only).
+                if (::overlayWindowManager.isInitialized) {
+                    overlayWindowManager.overlayTranscript.value = text
+                }
+            },
             onInterimReceived = { _ -> },
             onFinalSegmentReceived = { _ -> },
             onConnectionStateChanged = { _: ConnectionState -> },
-            onAmplitudeChanged = { _ -> },
+            onAmplitudeChanged = { amp ->
+                if (::overlayWindowManager.isInitialized) {
+                    overlayWindowManager.overlayAudioAmplitude.value = amp
+                }
+            },
             onError = { err -> onSessionError(err) },
             onDurationTicked = { seconds ->
                 if (::overlayWindowManager.isInitialized) {
@@ -619,6 +629,8 @@ class FloatingBubbleService : Service() {
         pendingCompletionTimeoutJob?.cancel()
         pendingCompletionTimeoutJob = null
         overlayWindowManager.overlayRecording.value = true
+        overlayWindowManager.overlayTranscript.value = ""
+        overlayWindowManager.overlayAudioAmplitude.value = 0f
 
         val prefs = getSharedPreferences("voxstream_settings", Context.MODE_PRIVATE)
         val selectedModel = prefs.getString("selected_model", GeminiLiveWebSocketClient.DEFAULT_MODEL)
@@ -629,7 +641,7 @@ class FloatingBubbleService : Service() {
             scope = serviceScope,
             apiKey = apiKey,
             model = selectedModel,
-            smartMode = true
+            smartMode = com.princeniithompson.rapcha.core.SmartModeSetting.isEnabled(this)
         )
     }
 
@@ -723,10 +735,19 @@ class FloatingBubbleService : Service() {
             return
         }
 
+        val spokenSeconds = overlayWindowManager.overlayElapsedSeconds.value
         // Injection verifies off the main thread. Collapse only after it returns.
         serviceScope.launch {
             try {
                 val placed = FloatingTextInjector.injectReporting(this@FloatingBubbleService, textToInject)
+                // v26 Home: word/time counters and the memory-only recent list. Runs after
+                // injection and can never change what was typed.
+                if (placed !is RapchaTextInserter.InsertionResult.Failed) {
+                    runCatching {
+                        com.princeniithompson.rapcha.data.DictationStats.record(this@FloatingBubbleService, textToInject, spokenSeconds)
+                        com.princeniithompson.rapcha.data.RecentDictations.add(textToInject)
+                    }
+                }
                 if (sessionLimitAutoFinish) {
                     when (placed) {
                         is RapchaTextInserter.InsertionResult.SuccessClipboardFallback ->
