@@ -1,0 +1,407 @@
+package com.princeniithompson.rapcha.data
+
+import android.content.Context
+import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.File
+import java.io.InputStreamReader
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+/**
+ * Unified, persistent diagnostics logger covering both the in-app recorder and the floating bubble.
+ * Durable across app restarts and phone reboots by appending to a JSONL file in app's private filesDir.
+ */
+object AppLogRepository {
+    private const val TAG = "AppLogRepository"
+    private const val LOGS_FILE_NAME = "diagnostics_history.jsonl"
+    private const val NOTES_FILE_NAME = "diagnostics_notes.jsonl"
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** v23: all file writes go through one serial worker (ordered, no interleaved appends). */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val writeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
+
+    /** v23 caps: memory ring + on-disk rotation so the log can no longer grow forever. */
+    const val MAX_MEMORY_ENTRIES = 3000
+    const val MAX_LOG_FILE_BYTES = 1_500_000L
+    /** v24 Lite: errors and crashes only, in a small file. */
+    const val LITE_MAX_LOG_FILE_BYTES = 64_000L
+    const val LITE_MAX_MEMORY_ENTRIES = 200
+
+    /** v24: Lite keeps only a tiny error log. */
+    fun keepsEvent(lite: Boolean, type: DiagnosticType): Boolean =
+        !lite || type == DiagnosticType.ERROR || type == DiagnosticType.CRASH
+    private const val ROTATED_LOGS_FILE_NAME = "diagnostics_history.1.jsonl"
+    private const val MAX_MESSAGE_CHARS = 4000
+
+    @Volatile
+    private var appContext: Context? = null
+    @Volatile
+    private var cachedDeviceSummary: String? = null
+    private var isInitialized = false
+
+    fun setDeviceSummary(summary: String) {
+        if (summary.isNotBlank()) {
+            cachedDeviceSummary = summary
+        }
+    }
+
+    // Multi-day persistent log entries (newest first for display)
+    private val _diagnosticEntries = MutableStateFlow<List<DiagnosticLogEntry>>(emptyList())
+    val diagnosticEntries: StateFlow<List<DiagnosticLogEntry>> = _diagnosticEntries.asStateFlow()
+
+    // Notes list (newest first)
+    private val _notes = MutableStateFlow<List<DiagnosticNote>>(emptyList())
+    val notes: StateFlow<List<DiagnosticNote>> = _notes.asStateFlow()
+
+    // Real-time protocol frames for "Live" tab inspector
+    private const val MAX_LIVE_FRAMES = 150
+    private val _liveFrames = MutableStateFlow<List<LogEntry>>(emptyList())
+    val logs: StateFlow<List<LogEntry>> = _liveFrames.asStateFlow()
+
+    // Unified live protocol stats & connection state updated from both in-app and bubble dictation
+    private val _liveStats = MutableStateFlow(LiveStats())
+    val liveStats: StateFlow<LiveStats> = _liveStats.asStateFlow()
+
+    private val _liveConnectionState = MutableStateFlow<ConnectionState>(ConnectionState.Idle)
+    val liveConnectionState: StateFlow<ConnectionState> = _liveConnectionState.asStateFlow()
+
+    fun updateLiveStats(stats: LiveStats) {
+        _liveStats.value = stats
+    }
+
+    fun updateLiveStats(transform: (LiveStats) -> LiveStats) {
+        _liveStats.update(transform)
+    }
+
+    fun updateConnectionState(state: ConnectionState, source: DiagnosticSource = DiagnosticSource.APP) {
+        _liveConnectionState.value = state
+        _liveStats.update { it.copy(source = source) }
+    }
+
+    fun recordInjectionResult(
+        durationMs: Long,
+        wordCount: Int,
+        targetApp: String,
+        transcriptText: String,
+        source: DiagnosticSource
+    ) {
+        if (com.princeniithompson.rapcha.core.LiteMode.enabled) return
+        val summary = TranscriptPrivacy.summary(transcriptText)
+        _liveStats.update {
+            it.copy(
+                source = source,
+                lastInjectionDurationMs = durationMs,
+                lastInjectionWordCount = wordCount,
+                lastInjectionTargetApp = targetApp,
+                lastTranscriptSummary = summary,
+                totalWordsSpoken = it.totalWordsSpoken + wordCount
+            )
+        }
+        val secStr = String.format(Locale.US, "%.1f", maxOf(0.2f, durationMs / 1000f))
+        addLog(
+            level = LogLevel.INFO,
+            tag = "Speed",
+            message = "Finished typing $wordCount words into $targetApp in ${secStr}s",
+            payload = summary,
+            source = source
+        )
+    }
+
+    @Synchronized
+    fun init(context: Context) {
+        if (isInitialized && appContext != null) return
+        val app = context.applicationContext ?: context
+        appContext = app
+        isInitialized = true
+        // v24 Lite: no device summary and no reload of the old diagnostics files.
+        if (com.princeniithompson.rapcha.core.LiteMode.enabled) return
+        // v23: device summary and the file load both run off the main thread.
+        scope.launch {
+            try {
+                com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.initContext(app)
+                if (cachedDeviceSummary == null) {
+                    cachedDeviceSummary = com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.deviceExportSummary(app)
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "Device summary failed", e)
+            }
+        }
+        loadFromDisk()
+    }
+
+    private fun loadFromDisk() {
+        writeScope.launch {
+            val context = appContext ?: return@launch
+            try {
+                // 1. Load Diagnostic logs from JSONL (rotated file first, then the current one)
+                val loadedLogs = mutableListOf<DiagnosticLogEntry>()
+                for (name in listOf(ROTATED_LOGS_FILE_NAME, LOGS_FILE_NAME)) {
+                val logFile = File(context.filesDir, name)
+                if (logFile.exists()) {
+                    logFile.bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            val trimmed = line.trim()
+                            if (trimmed.isNotEmpty()) {
+                                try {
+                                    val obj = JSONObject(trimmed)
+                                    val entry = DiagnosticLogEntry(
+                                        id = obj.optString("id", java.util.UUID.randomUUID().toString()),
+                                        timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
+                                        source = DiagnosticSource.valueOf(obj.optString("source", "APP")),
+                                        type = DiagnosticType.valueOf(obj.optString("type", "SESSION_START")),
+                                        message = obj.optString("message", "")
+                                    )
+                                    loadedLogs.add(entry)
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Error parsing log JSONL line", e)
+                                }
+                            }
+                        }
+                    }
+                }
+                }
+                // Sort newest first. Merge with anything logged before the load finished
+                // (v22 overwrote those early entries).
+                _diagnosticEntries.update { current ->
+                    val seen = HashSet<String>(current.size)
+                    current.forEach { seen.add(it.id) }
+                    (current + loadedLogs.filter { seen.add(it.id) })
+                        .sortedByDescending { it.timestamp }
+                        .take(MAX_MEMORY_ENTRIES)
+                }
+
+                // 2. Load Notes from JSONL
+                val noteFile = File(context.filesDir, NOTES_FILE_NAME)
+                val loadedNotes = mutableListOf<DiagnosticNote>()
+                if (noteFile.exists()) {
+                    noteFile.bufferedReader().useLines { lines ->
+                        lines.forEach { line ->
+                            val trimmed = line.trim()
+                            if (trimmed.isNotEmpty()) {
+                                try {
+                                    val obj = JSONObject(trimmed)
+                                    val note = DiagnosticNote(
+                                        id = obj.optString("id", java.util.UUID.randomUUID().toString()),
+                                        timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
+                                        text = obj.optString("text", "")
+                                    )
+                                    loadedNotes.add(note)
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Error parsing note JSONL line", e)
+                                }
+                            }
+                        }
+                    }
+                }
+                _notes.update { current ->
+                    val seen = current.map { it.id }.toHashSet()
+                    (current + loadedNotes.filter { seen.add(it.id) }).sortedByDescending { it.timestamp }
+                }
+
+                Log.d(TAG, "Loaded ${loadedLogs.size} diagnostic logs and ${loadedNotes.size} notes from disk")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to load diagnostics from disk", e)
+            }
+        }
+    }
+
+    /**
+     * Unified event-level logging entry point for both APP and BUBBLE.
+     * Appends to persistent JSONL on private storage off the main thread.
+     */
+    fun logEvent(source: DiagnosticSource, type: DiagnosticType, message: String) {
+        val lite = com.princeniithompson.rapcha.core.LiteMode.enabled
+        if (!keepsEvent(lite, type)) return
+        val maxEntries = if (lite) LITE_MAX_MEMORY_ENTRIES else MAX_MEMORY_ENTRIES
+        val maxFileBytes = if (lite) LITE_MAX_LOG_FILE_BYTES else MAX_LOG_FILE_BYTES
+        val entry = DiagnosticLogEntry(
+            source = source,
+            type = type,
+            message = if (message.length > MAX_MESSAGE_CHARS) message.take(MAX_MESSAGE_CHARS) else message
+        )
+
+        // Update in-memory state (prepend newest), capped ring buffer.
+        _diagnosticEntries.update { current ->
+            val next = ArrayList<DiagnosticLogEntry>(minOf(current.size + 1, maxEntries))
+            next.add(entry)
+            val keep = minOf(current.size, maxEntries - 1)
+            for (i in 0 until keep) next.add(current[i])
+            next
+        }
+
+        // Off-thread durable append (serial writer, rotates at ~1.5 MB keeping one old file)
+        writeScope.launch {
+            val context = appContext ?: return@launch
+            try {
+                val file = File(context.filesDir, LOGS_FILE_NAME)
+                if (file.length() > maxFileBytes) {
+                    val rotated = File(context.filesDir, ROTATED_LOGS_FILE_NAME)
+                    rotated.delete()
+                    if (!file.renameTo(rotated)) file.delete()
+                }
+                val json = JSONObject().apply {
+                    put("id", entry.id)
+                    put("timestamp", entry.timestamp)
+                    put("source", entry.source.name)
+                    put("type", entry.type.name)
+                    put("message", entry.message)
+                }
+                file.appendText(json.toString() + "\n")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed appending diagnostic event to disk", e)
+            }
+        }
+    }
+
+    /**
+     * Adds an auto-timestamped note to the persistent store.
+     */
+    fun addNote(text: String) {
+        if (text.isBlank()) return
+        val note = DiagnosticNote(text = text.trim())
+
+        _notes.update { current ->
+            listOf(note) + current
+        }
+
+        scope.launch {
+            val context = appContext ?: return@launch
+            try {
+                val file = File(context.filesDir, NOTES_FILE_NAME)
+                val json = JSONObject().apply {
+                    put("id", note.id)
+                    put("timestamp", note.timestamp)
+                    put("text", note.text)
+                }
+                file.appendText(json.toString() + "\n")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed appending note to disk", e)
+            }
+        }
+    }
+
+    /**
+     * Real-time socket frame logger for Live tab stream view
+     */
+    fun addLog(
+        level: LogLevel,
+        tag: String,
+        message: String,
+        payload: String? = null,
+        source: DiagnosticSource = DiagnosticSource.APP
+    ) {
+        if (com.princeniithompson.rapcha.core.LiteMode.enabled && level != LogLevel.ERROR) return
+        val entry = LogEntry(level = level, tag = tag, message = message, payload = payload, source = source)
+        _liveFrames.update { current ->
+            (current + entry).takeLast(MAX_LIVE_FRAMES)
+        }
+    }
+
+    fun clearLiveFrames() {
+        _liveFrames.value = emptyList()
+    }
+
+    /**
+     * Wipes all persisted diagnostics history and notes from disk and memory.
+     */
+    fun clearAllDiagnostics() {
+        _diagnosticEntries.value = emptyList()
+        _notes.value = emptyList()
+        _liveFrames.value = emptyList()
+
+        writeScope.launch {
+            val context = appContext ?: return@launch
+            try {
+                File(context.filesDir, LOGS_FILE_NAME).delete()
+                File(context.filesDir, ROTATED_LOGS_FILE_NAME).delete()
+                File(context.filesDir, NOTES_FILE_NAME).delete()
+                Log.d(TAG, "All persisted diagnostics and notes cleared from disk.")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error deleting diagnostics files", e)
+            }
+        }
+    }
+
+    /**
+     * Builds one combined, chronological .txt covering full persisted history plus all notes.
+     */
+    fun getFullExportFormatted(): String {
+        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+        val dateHeaderFormat = SimpleDateFormat("EEEE, MMMM dd, yyyy", Locale.getDefault())
+
+        val entries = _diagnosticEntries.value.sortedBy { it.timestamp }
+        val allNotes = _notes.value.sortedBy { it.timestamp }
+        val deviceLine = cachedDeviceSummary
+            ?: com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.deviceExportSummary(appContext)
+        val networkLine = com.princeniithompson.rapcha.diagnostics.NetworkAndDeviceDiagnostics.currentTag(appContext)
+
+        return buildString {
+            append("====================================================\n")
+            append("      RAPCHA DIAGNOSTICS & PROTOCOL MONITOR      \n")
+            append("      Unified Persistent Multi-Day Export           \n")
+            append("====================================================\n")
+            append("Export Date: ${sdf.format(Date())}\n")
+            append("Device: $deviceLine\n")
+            append("Current Network: $networkLine\n")
+            append("Total Events: ${entries.size}\n")
+            append("Total Notes: ${allNotes.size}\n\n")
+
+            // Section 1: Notes
+            append("----------------------------------------------------\n")
+            append("                DIAGNOSTIC USER NOTES               \n")
+            append("----------------------------------------------------\n")
+            if (allNotes.isEmpty()) {
+                append("(No user notes recorded)\n\n")
+            } else {
+                allNotes.forEachIndexed { idx, note ->
+                    append("[#${idx + 1}] [${sdf.format(Date(note.timestamp))}]\n")
+                    append("     ${note.text}\n\n")
+                }
+            }
+
+            // Section 2: Combined Timeline
+            append("----------------------------------------------------\n")
+            append("                 DIAGNOSTIC EVENTS                  \n")
+            append("----------------------------------------------------\n")
+            if (entries.isEmpty()) {
+                append("(No diagnostic events recorded yet)\n\n")
+            } else {
+                var lastDayStr = ""
+                entries.forEach { entry ->
+                    val dayStr = dateHeaderFormat.format(Date(entry.timestamp))
+                    if (dayStr != lastDayStr) {
+                        append("\n>>> DATE: $dayStr <<<\n")
+                        lastDayStr = dayStr
+                    }
+                    val timeStr = sdf.format(Date(entry.timestamp))
+                    append("[$timeStr] [${entry.source.name}] [${entry.type.name}] ${entry.message}\n")
+                }
+            }
+
+            append("\n")
+            append(LyraReviewExport.section(HistoryRepository.lyraReviewSessions()))
+            append("==================== END OF EXPORT ====================\n")
+        }
+    }
+
+    /**
+     * Legacy formatted string for backward compatibility
+     */
+    fun getAllLogsFormatted(): String {
+        return getFullExportFormatted()
+    }
+}

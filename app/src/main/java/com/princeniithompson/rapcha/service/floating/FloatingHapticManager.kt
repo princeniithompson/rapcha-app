@@ -1,0 +1,130 @@
+package com.princeniithompson.rapcha.service.floating
+
+import android.content.Context
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.util.Log
+
+enum class FloatingHapticType {
+    TRANSCRIPTION_START,
+    FINAL_SENTENCE,
+    TRANSCRIPTION_STOP,
+    BUBBLE_HOLD,
+    BUBBLE_MOVE,
+    BUBBLE_SETTLE,
+    CLIPBOARD_FALLBACK,
+    CONNECTION_LOST,
+    ENDING_SOON,
+    ENDED,
+    PROBLEM
+}
+
+object FloatingHapticManager {
+    private const val TAG = "FloatingHaptic"
+
+    fun trigger(context: Context, type: FloatingHapticType) {
+        if (com.princeniithompson.rapcha.core.LiteMode.enabled) return // v24 Lite: no haptics
+        try {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vibratorManager?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            } ?: return
+
+            if (!vibrator.hasVibrator()) return
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val effect = when (type) {
+                    FloatingHapticType.CLIPBOARD_FALLBACK -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            VibrationEffect.createPredefined(VibrationEffect.EFFECT_DOUBLE_CLICK)
+                        } else {
+                            VibrationEffect.createWaveform(longArrayOf(0, 25, 40, 25), -1)
+                        }
+                    }
+                    FloatingHapticType.TRANSCRIPTION_START -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK)
+                        } else {
+                            VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE)
+                        }
+                    }
+                    FloatingHapticType.FINAL_SENTENCE -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
+                        } else {
+                            VibrationEffect.createOneShot(20, 150)
+                        }
+                    }
+                    FloatingHapticType.TRANSCRIPTION_STOP -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            VibrationEffect.createPredefined(VibrationEffect.EFFECT_DOUBLE_CLICK)
+                        } else {
+                            VibrationEffect.createWaveform(longArrayOf(0, 40, 40, 40), -1)
+                        }
+                    }
+                    FloatingHapticType.BUBBLE_HOLD -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK)
+                        } else {
+                            VibrationEffect.createOneShot(30, VibrationEffect.DEFAULT_AMPLITUDE)
+                        }
+                    }
+                    FloatingHapticType.BUBBLE_MOVE -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
+                        } else {
+                            VibrationEffect.createOneShot(12, 100)
+                        }
+                    }
+                    FloatingHapticType.CONNECTION_LOST -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            VibrationEffect.createPredefined(VibrationEffect.EFFECT_DOUBLE_CLICK)
+                        } else {
+                            VibrationEffect.createWaveform(longArrayOf(0, 40, 50, 40), -1)
+                        }
+                    }
+                    FloatingHapticType.ENDING_SOON -> {
+                        VibrationEffect.createWaveform(longArrayOf(0, 30, 40, 30), -1)
+                    }
+                    FloatingHapticType.ENDED -> {
+                        VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE)
+                    }
+                    FloatingHapticType.PROBLEM -> {
+                        VibrationEffect.createWaveform(longArrayOf(0, 40, 40, 40, 40, 40), -1)
+                    }
+                    FloatingHapticType.BUBBLE_SETTLE -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK)
+                        } else {
+                            VibrationEffect.createOneShot(40, 180)
+                        }
+                    }
+                }
+                vibrator.vibrate(effect)
+            } else {
+                @Suppress("DEPRECATION")
+                val millis = when (type) {
+                    FloatingHapticType.TRANSCRIPTION_START -> 50L
+                    FloatingHapticType.FINAL_SENTENCE -> 20L
+                    FloatingHapticType.TRANSCRIPTION_STOP -> 60L
+                    FloatingHapticType.BUBBLE_HOLD -> 30L
+                    FloatingHapticType.BUBBLE_MOVE -> 12L
+                    FloatingHapticType.BUBBLE_SETTLE -> 40L
+                    FloatingHapticType.CLIPBOARD_FALLBACK -> 35L
+                    FloatingHapticType.CONNECTION_LOST -> 70L
+                    FloatingHapticType.ENDING_SOON -> 80L
+                    FloatingHapticType.ENDED -> 80L
+                    FloatingHapticType.PROBLEM -> 120L
+                }
+                vibrator.vibrate(millis)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error executing haptic vibration", e)
+        }
+    }
+}

@@ -1,0 +1,749 @@
+package com.princeniithompson.rapcha.service
+
+import android.app.Activity
+import android.app.ActivityManager
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.provider.Settings
+import android.util.Log
+import android.widget.Toast
+import com.princeniithompson.rapcha.data.AppLogRepository
+import com.princeniithompson.rapcha.data.DiagnosticSource
+import com.princeniithompson.rapcha.data.DiagnosticType
+import com.princeniithompson.rapcha.service.floating.RetryClipLength
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+/**
+ * Coordinates communication between:
+ * - The UI / Settings
+ * - RapchaAccessibilityService (detects text field focus & injects text)
+ * - FloatingBubbleService (renders the floating 🛟 overlay & handles dictation)
+ */
+object FloatingBubbleManager {
+    private const val TAG = "FloatingBubbleManager"
+    private const val PREFS_NAME = "voxstream_bubble_prefs"
+    private const val KEY_BUBBLE_ENABLED = "bubble_enabled"
+    private const val KEY_GLOW_STYLE = "glow_animation_style"
+    private const val KEY_FINISHING_STYLE = "finishing_animation_style"
+    private const val KEY_COLOR_TONE = "dynamic_color_tone"
+    private const val KEY_SMART_SAFE_MODE = "smart_safe_mode_enabled"
+    private const val KEY_APP_DYNAMIC_COLOR = "app_dynamic_color_enabled"
+    private const val KEY_BUBBLE_CHROME = "bubble_chrome_style"
+    const val DEFAULT_GLOW_STYLE_ID = "breathing_horizon"
+    const val DEFAULT_FINISHING_STYLE_ID = "pixel_flourish"
+    const val DEFAULT_COLOR_TONE = "luminous"
+
+    private val _isBubbleEnabled = MutableStateFlow(false)
+    val isBubbleEnabled: StateFlow<Boolean> = _isBubbleEnabled.asStateFlow()
+
+    private val _isAppDynamicColorEnabled = MutableStateFlow(true)
+    val isAppDynamicColorEnabled: StateFlow<Boolean> = _isAppDynamicColorEnabled.asStateFlow()
+
+    private val _isSmartSafeModeEnabled = MutableStateFlow(true)
+    val isSmartSafeModeEnabled: StateFlow<Boolean> = _isSmartSafeModeEnabled.asStateFlow()
+
+    private val _isCurrentAppSensitive = MutableStateFlow(false)
+    val isCurrentAppSensitive: StateFlow<Boolean> = _isCurrentAppSensitive.asStateFlow()
+
+    private val _selectedGlowStyleId = MutableStateFlow(DEFAULT_GLOW_STYLE_ID)
+    val selectedGlowStyleId: StateFlow<String> = _selectedGlowStyleId.asStateFlow()
+
+    private val _selectedFinishingStyleId = MutableStateFlow(DEFAULT_FINISHING_STYLE_ID)
+    val selectedFinishingStyleId: StateFlow<String> = _selectedFinishingStyleId.asStateFlow()
+
+    private val _selectedColorTone = MutableStateFlow(DEFAULT_COLOR_TONE)
+    val selectedColorTone: StateFlow<String> = _selectedColorTone.asStateFlow()
+
+    private val _bubbleChrome = MutableStateFlow(com.princeniithompson.rapcha.service.floating.BubbleChromeStyle.ORIGINAL)
+    val bubbleChrome: StateFlow<com.princeniithompson.rapcha.service.floating.BubbleChromeStyle> = _bubbleChrome.asStateFlow()
+
+    // Foreground package tracking & session locking:
+    private val _currentForegroundPackage = MutableStateFlow<String?>(null)
+    val currentForegroundPackage: StateFlow<String?> = _currentForegroundPackage.asStateFlow()
+
+    private val _currentResolvedAppContext = MutableStateFlow<com.princeniithompson.rapcha.util.AppResolutionEngine.AppContext?>(null)
+    val currentResolvedAppContext: StateFlow<com.princeniithompson.rapcha.util.AppResolutionEngine.AppContext?> = _currentResolvedAppContext.asStateFlow()
+
+    private val _lockedSessionContext = MutableStateFlow<String?>(null)
+    val lockedSessionContext: StateFlow<String?> = _lockedSessionContext.asStateFlow()
+
+    private val _selectedAiPolishMode = MutableStateFlow(com.princeniithompson.rapcha.service.floating.AiPolishMode.CLEAN_MESSAGE)
+    val selectedAiPolishMode: StateFlow<com.princeniithompson.rapcha.service.floating.AiPolishMode> = _selectedAiPolishMode.asStateFlow()
+
+    private val _isCurrentAppAi = MutableStateFlow(false)
+    val isCurrentAppAi: StateFlow<Boolean> = _isCurrentAppAi.asStateFlow()
+
+    private val _isAccessibilityConnected = MutableStateFlow(false)
+    val isAccessibilityConnected: StateFlow<Boolean> = _isAccessibilityConnected.asStateFlow()
+
+    private val _hasOverlayPermission = MutableStateFlow(false)
+    val hasOverlayPermission: StateFlow<Boolean> = _hasOverlayPermission.asStateFlow()
+
+    private val _isFieldActive = MutableStateFlow(false)
+    val isFieldActive: StateFlow<Boolean> = _isFieldActive.asStateFlow()
+
+    private val _isKeyboardVisible = MutableStateFlow(false)
+    val isKeyboardVisible: StateFlow<Boolean> = _isKeyboardVisible.asStateFlow()
+
+    private val _isRecording = MutableStateFlow(false)
+    val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
+
+    private val _polishOverride = MutableStateFlow(com.princeniithompson.rapcha.service.floating.Stage2PolishBackend.AUTO)
+    val polishOverride: StateFlow<com.princeniithompson.rapcha.service.floating.Stage2PolishBackend> = _polishOverride.asStateFlow()
+
+    /** True only while the locked section is two-step Live. Smart sections stay false. */
+    private val _liveTwoStepPolish = MutableStateFlow(false)
+    val liveTwoStepPolish: StateFlow<Boolean> = _liveTwoStepPolish.asStateFlow()
+
+    private val _sectionPolishMode = MutableStateFlow<com.princeniithompson.rapcha.service.floating.SectionPolishMode?>(null)
+    val sectionPolishMode: StateFlow<com.princeniithompson.rapcha.service.floating.SectionPolishMode?> = _sectionPolishMode.asStateFlow()
+
+    private val _lockedPolishSection = MutableStateFlow<com.princeniithompson.rapcha.service.floating.LockedPolishSection?>(null)
+    val lockedPolishSection: StateFlow<com.princeniithompson.rapcha.service.floating.LockedPolishSection?> = _lockedPolishSection.asStateFlow()
+
+    private val _isNetworkProblem = MutableStateFlow(false)
+    val isNetworkProblem: StateFlow<Boolean> = _isNetworkProblem.asStateFlow()
+
+    data class OfflineRetryOffer(
+        val retriesLeft: Int,
+        val durationMs: Long,
+        val length: RetryClipLength,
+        val busy: Boolean,
+        val message: String?
+    )
+
+    private val _offlineRetry = MutableStateFlow<OfflineRetryOffer?>(null)
+    val offlineRetry: StateFlow<OfflineRetryOffer?> = _offlineRetry.asStateFlow()
+
+    @Volatile
+    var onOfflineRetry: (() -> Unit)? = null
+
+    @Volatile
+    var onOfflineDiscard: (() -> Unit)? = null
+
+    fun setOfflineRetry(offer: OfflineRetryOffer?) {
+        _offlineRetry.value = offer
+    }
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val _isClipboardFallbackIndicator = MutableStateFlow(false)
+    val isClipboardFallbackIndicator: StateFlow<Boolean> = _isClipboardFallbackIndicator.asStateFlow()
+
+    fun triggerClipboardFallbackIndicator() {
+        _isClipboardFallbackIndicator.value = true
+        mainHandler.postDelayed({
+            _isClipboardFallbackIndicator.value = false
+        }, 2500L)
+    }
+
+    fun resetClipboardFallbackIndicator() {
+        _isClipboardFallbackIndicator.value = false
+    }
+
+    fun setNetworkProblem(hasProblem: Boolean) {
+        _isNetworkProblem.value = hasProblem
+    }
+
+    private var initialized = false
+
+    private fun bypassHiddenApiRestrictions() {
+        // No-op: Restricted on modern Android SDKs and not required for application features.
+    }
+
+    fun refreshLiveTwoStep(context: Context) {
+        val settings = context.getSharedPreferences("voxstream_settings", Context.MODE_PRIVATE)
+        _polishOverride.value = com.princeniithompson.rapcha.service.floating.Stage2PolishSettings.read(settings)
+    }
+
+    fun lockSection(section: com.princeniithompson.rapcha.service.floating.LockedPolishSection) {
+        _lockedPolishSection.value = section
+        _sectionPolishMode.value = section.mode
+        _liveTwoStepPolish.value = section.mode == com.princeniithompson.rapcha.service.floating.SectionPolishMode.TWO_STEP_LIVE
+    }
+
+    fun unlockSection() {
+        _lockedPolishSection.value = null
+        _sectionPolishMode.value = null
+        _liveTwoStepPolish.value = false
+        com.princeniithompson.rapcha.service.floating.Stage2WarmLine.close()
+    }
+
+    fun init(context: Context) {
+        refreshLiveTwoStep(context)
+        if (initialized) return
+        bypassHiddenApiRestrictions()
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        _isBubbleEnabled.value = prefs.getBoolean(KEY_BUBBLE_ENABLED, false)
+
+        // Validate saved style; if previously set to one of the removed styles, automatically reset to Breathing Horizon
+        val savedGlowStyle = prefs.getString(KEY_GLOW_STYLE, DEFAULT_GLOW_STYLE_ID) ?: DEFAULT_GLOW_STYLE_ID
+        val validatedGlowStyle = if (com.princeniithompson.rapcha.ui.components.GlowAnimationCatalogue.styles.any { it.id == savedGlowStyle }) {
+            savedGlowStyle
+        } else {
+            prefs.edit().putString(KEY_GLOW_STYLE, DEFAULT_GLOW_STYLE_ID).apply()
+            DEFAULT_GLOW_STYLE_ID
+        }
+        _selectedGlowStyleId.value = validatedGlowStyle
+
+        _selectedFinishingStyleId.value = prefs.getString(KEY_FINISHING_STYLE, DEFAULT_FINISHING_STYLE_ID) ?: DEFAULT_FINISHING_STYLE_ID
+        val storedTone = prefs.getString(KEY_COLOR_TONE, DEFAULT_COLOR_TONE)
+        val tone = com.princeniithompson.rapcha.service.floating.DynamicTonePolicy.normalize(storedTone)
+        if (tone != storedTone) {
+            prefs.edit().putString(KEY_COLOR_TONE, tone).apply()
+        }
+        _selectedColorTone.value = tone
+        val storedChrome = prefs.getString(KEY_BUBBLE_CHROME, null)
+        val chrome = com.princeniithompson.rapcha.service.floating.BubbleChromeStyle.fromStored(storedChrome)
+        if (storedChrome != chrome.stored()) {
+            prefs.edit().putString(KEY_BUBBLE_CHROME, chrome.stored()).apply()
+        }
+        // v24 Lite: always the compact pill (the Words popup runs many animations).
+        _bubbleChrome.value = if (com.princeniithompson.rapcha.core.LiteMode.enabled) {
+            com.princeniithompson.rapcha.service.floating.BubbleChromeStyle.COMPACT
+        } else chrome
+        _isSmartSafeModeEnabled.value = prefs.getBoolean(KEY_SMART_SAFE_MODE, true)
+        _isAppDynamicColorEnabled.value = true
+        if (!prefs.getBoolean(KEY_APP_DYNAMIC_COLOR, true)) {
+            prefs.edit().putBoolean(KEY_APP_DYNAMIC_COLOR, true).apply()
+        }
+        initialized = true
+        com.princeniithompson.rapcha.service.floating.RenderBudget.init(context)
+        checkPermissions(context)
+
+        if (shouldAutoStartBubbleFromInit(
+                enabled = _isBubbleEnabled.value,
+                canOverlay = canDrawOverlays(context),
+                uiForeground = isUiForeground(context)
+            )
+        ) {
+            startBubbleService(context, source = "init")
+        } else if (_isBubbleEnabled.value &&
+            canDrawOverlays(context) &&
+            FloatingBubbleService.instance == null &&
+            com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.lastStopReason(context) ==
+            com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.STOP_UNEXPECTED
+        ) {
+            startBubbleService(context, source = "init_recover")
+        }
+    }
+
+    /**
+     * Background init must not call startForegroundService. The accessibility
+     * service starts the bubble when it reconnects after an update.
+     */
+    internal fun shouldAutoStartBubbleFromInit(
+        enabled: Boolean,
+        canOverlay: Boolean,
+        uiForeground: Boolean
+    ): Boolean = enabled && canOverlay && uiForeground
+
+    internal fun isUiForeground(context: Context): Boolean {
+        if (context is Activity) return true
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
+        val mine = activityManager.runningAppProcesses?.firstOrNull { it.pid == android.os.Process.myPid() }
+        return mine?.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+    }
+
+    fun isBubbleEnabledSync(context: Context): Boolean {
+        return try {
+            val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.getBoolean(KEY_BUBBLE_ENABLED, _isBubbleEnabled.value)
+        } catch (_: Throwable) {
+            _isBubbleEnabled.value
+        }
+    }
+
+    fun startEnabledBubble(context: Context, source: String = "start_enabled") {
+        if (!initialized) {
+            init(context)
+        }
+        if (_isBubbleEnabled.value && canDrawOverlays(context)) {
+            startBubbleService(context, source = source)
+        }
+    }
+
+    fun setAppDynamicColorEnabled(context: Context, enabled: Boolean) {
+        _isAppDynamicColorEnabled.value = enabled
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_APP_DYNAMIC_COLOR, enabled).apply()
+    }
+
+    fun setColorTone(context: Context, toneId: String) {
+        val tone = com.princeniithompson.rapcha.service.floating.DynamicTonePolicy.normalize(toneId)
+        _selectedColorTone.value = tone
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_COLOR_TONE, tone).apply()
+    }
+
+    fun setBubbleChrome(context: Context, style: com.princeniithompson.rapcha.service.floating.BubbleChromeStyle) {
+        if (!com.princeniithompson.rapcha.core.LiteMode.enabled) _bubbleChrome.value = style
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_BUBBLE_CHROME, style.stored()).apply()
+    }
+
+    fun setGlowStyle(context: Context, styleId: String) {
+        val validStyle = if (com.princeniithompson.rapcha.ui.components.GlowAnimationCatalogue.styles.any { it.id == styleId }) {
+            styleId
+        } else {
+            DEFAULT_GLOW_STYLE_ID
+        }
+        _selectedGlowStyleId.value = validStyle
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_GLOW_STYLE, validStyle).apply()
+    }
+
+    fun setFinishingStyle(context: Context, styleId: String) {
+        _selectedFinishingStyleId.value = styleId
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_FINISHING_STYLE, styleId).apply()
+    }
+
+    fun setSmartSafeModeEnabled(context: Context, enabled: Boolean) {
+        _isSmartSafeModeEnabled.value = enabled
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_SMART_SAFE_MODE, enabled).apply()
+
+        if (!enabled) {
+            safeModeHandler.removeCallbacks(safeModeConfirm)
+            pendingSafeMode = SafeModeClassifier.Verdict.notSensitive()
+            safeModeGate.notePublished(false)
+            updateSensitivity(false, SafeModeClassifier.Verdict.notSensitive().describe(_currentForegroundPackage.value))
+        } else {
+            val pkg = _currentForegroundPackage.value
+            submitSafeMode(
+                SafeModeClassifier.classify(
+                    context = context,
+                    packageName = pkg,
+                    resolvedAppName = _currentResolvedAppContext.value?.name
+                )
+            )
+        }
+    }
+
+    fun canDrawOverlays(context: Context): Boolean {
+        return Settings.canDrawOverlays(context)
+    }
+
+    fun isAccessibilityServiceEnabled(context: Context): Boolean {
+        return try {
+            val expectedClass = RapchaAccessibilityService::class.java.name
+            val enabledServices = Settings.Secure.getString(
+                context.contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ) ?: return false
+            val colonSplitter = android.text.TextUtils.SimpleStringSplitter(':')
+            colonSplitter.setString(enabledServices)
+            while (colonSplitter.hasNext()) {
+                val componentName = colonSplitter.next()
+                if (componentName.contains(context.packageName) && componentName.contains("AccessibilityService")) {
+                    return true
+                }
+            }
+            false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun checkPermissions(context: Context) {
+        val overlay = canDrawOverlays(context)
+        _hasOverlayPermission.value = overlay
+        val a11y = isAccessibilityServiceEnabled(context) || RapchaAccessibilityService.instance != null
+        if (a11y) {
+            _isAccessibilityConnected.value = true
+        }
+    }
+
+    private val respawnThrottle = RespawnThrottle()
+
+    fun setBubbleEnabled(context: Context, enabled: Boolean) {
+        _isBubbleEnabled.value = enabled
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_BUBBLE_ENABLED, enabled).apply()
+
+        if (enabled) {
+            respawnThrottle.reset()
+            com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.resetJobSuccessStreak(context)
+            if (canDrawOverlays(context)) {
+                startBubbleService(context, source = "user_enable")
+            }
+        } else {
+            com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.recordLastStopReason(
+                context,
+                com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.STOP_INTENTIONAL
+            )
+            BubbleRecoveryJobScheduler.cancel(context)
+            com.princeniithompson.rapcha.service.floating.FloatingNotificationManager.cancelRestoreNotification(context)
+            stopBubbleService(context)
+        }
+    }
+
+    fun startBubbleService(context: Context, source: String = "manual", bypassThrottle: Boolean = false): Boolean {
+        val app = context.applicationContext ?: context
+        if (!canDrawOverlays(app)) {
+            com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.recordHideReason(
+                app,
+                com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.HIDE_OVERLAY_PERMISSION_MISSING
+            )
+            return false
+        }
+        // v23 (Android 12+ background-start fix): when our accessibility service is connected,
+        // bind the bubble service from it first. A bind from a running accessibility service is not
+        // a background foreground-service start, so it cannot be refused, and the bubble then lives
+        // as long as the accessibility binding. The foreground promotion below is a bonus.
+        val bound = RapchaAccessibilityService.instance?.bindBubbleService(source) == true
+        val uiForeground = isUiForeground(app)
+        val decision = FgsStartupDecision.startRoute(
+            sdkInt = Build.VERSION.SDK_INT,
+            boundByAccessibility = bound,
+            uiForeground = uiForeground,
+            exemptSource = FgsStartupDecision.isExemptSource(source)
+        )
+        if (decision != FgsStartupDecision.StartRoute.START_FOREGROUND) {
+            com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.record(
+                context = app,
+                type = DiagnosticType.FGS_FALLBACK,
+                message = "source=$source route=$decision bound=$bound ui_foreground=$uiForeground"
+            )
+        }
+        if (decision == FgsStartupDecision.StartRoute.BIND_ONLY) {
+            com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.recordLastRestartReason(app, "Bound ($source)")
+            return true
+        }
+        if (!bound && !bypassThrottle && FloatingBubbleService.instance == null && !respawnThrottle.tryAcquire()) {
+            Log.d(TAG, "Throttled duplicate startBubbleService(source=$source)")
+            return false
+        }
+        return try {
+            val intent = Intent(app, FloatingBubbleService::class.java).apply {
+                putExtra(FloatingBubbleService.EXTRA_START_SOURCE, source)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                app.startForegroundService(intent)
+            } else {
+                app.startService(intent)
+            }
+            com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.recordLastRestartReason(app, "Started ($source)")
+            true
+        } catch (e: Throwable) {
+            if (bound) {
+                // The bubble is alive through the accessibility binding; nothing to recover.
+                com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.record(
+                    context = app,
+                    type = DiagnosticType.FGS_FALLBACK,
+                    message = "source=$source route=bound_unpromoted kind=${e.javaClass.simpleName}"
+                )
+                return true
+            }
+            val refusalClass = e.javaClass.simpleName
+            val kind = when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    e is android.app.ForegroundServiceStartNotAllowedException -> "ForegroundServiceStartNotAllowedException"
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
+                    e is android.app.BackgroundServiceStartNotAllowedException -> "BackgroundServiceStartNotAllowedException"
+                e is IllegalStateException -> "IllegalStateException"
+                e is SecurityException -> "SecurityException"
+                else -> refusalClass
+            }
+            Log.e(TAG, "Failed to start FloatingBubbleService(source=$source, kind=$kind)", e)
+            com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.record(
+                context = app,
+                type = DiagnosticType.FGS_REFUSED,
+                message = "source=$source kind=$kind detail=${e.message?.take(140)}"
+            )
+            BubbleRecoveryJobScheduler.schedule(app, RecoveryJobPolicy.DEFAULT_DELAY_MS)
+            com.princeniithompson.rapcha.service.floating.FloatingNotificationManager.postRestoreNotification(app)
+            false
+        }
+    }
+
+    fun stopBubbleService(context: Context) {
+        try {
+            com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.recordLastStopReason(
+                context,
+                com.princeniithompson.rapcha.diagnostics.BubbleHealthLog.STOP_INTENTIONAL
+            )
+            // v23: also drop the accessibility binding, otherwise stopService() leaves the
+            // bound service (and the bubble) alive.
+            RapchaAccessibilityService.instance?.unbindBubbleService("stop_bubble_service")
+            val intent = Intent(context, FloatingBubbleService::class.java)
+            context.stopService(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to stop FloatingBubbleService", e)
+        }
+    }
+
+    fun setAccessibilityConnected(connected: Boolean) {
+        _isAccessibilityConnected.value = connected
+    }
+
+    @Volatile
+    var bubbleSignalAtElapsed: Long = 0L
+        private set
+
+    @Volatile
+    var bubbleHideSignalAtElapsed: Long = 0L
+        private set
+
+    /** Set only while a mid-session Safe Mode handoff is inserting the words the user already said. */
+    @Volatile
+    var allowSafeModeInjection: Boolean = false
+
+    fun noteBubbleHideSignal() {
+        bubbleHideSignalAtElapsed = SystemClock.elapsedRealtime()
+    }
+
+    fun notifyFieldFocus(isFocused: Boolean) {
+        val keyboardUp = _isKeyboardVisible.value
+        if (isFocused && !_isFieldActive.value && keyboardUp) {
+            bubbleSignalAtElapsed = SystemClock.elapsedRealtime()
+        } else if (!isFocused && _isFieldActive.value && !keyboardUp) {
+            noteBubbleHideSignal()
+        }
+        _isFieldActive.value = isFocused
+        FloatingBubbleService.instance?.onFieldFocusChanged(isFocused)
+    }
+
+    fun notifyKeyboardVisibility(visible: Boolean) {
+        if (visible && !_isKeyboardVisible.value) {
+            bubbleSignalAtElapsed = SystemClock.elapsedRealtime()
+        } else if (!visible && _isKeyboardVisible.value) {
+            noteBubbleHideSignal()
+        }
+        _isKeyboardVisible.value = visible
+        Log.d(TAG, "notifyKeyboardVisibility: $visible")
+        FloatingBubbleService.instance?.onKeyboardVisibilityChanged(visible)
+    }
+
+    /**
+     * Records the foreground package without walking the window tree.
+     * The accessibility hot path must not call [updateCurrentForegroundPackage].
+     */
+    fun noteForegroundPackage(pkg: String?) {
+        if (pkg.isNullOrBlank() || AppContextResolver.isIgnoredPackage(null, pkg)) return
+        _currentForegroundPackage.value = pkg
+    }
+
+    fun setRecordingState(recording: Boolean) {
+        _isRecording.value = recording
+    }
+
+    private var backgroundLearningJob: kotlinx.coroutines.Job? = null
+    private val managerScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main + kotlinx.coroutines.SupervisorJob())
+
+    fun updateCurrentForegroundPackage(pkg: String?, context: Context? = null) {
+        if (!AppContextResolver.isIgnoredPackage(context, pkg)) {
+            _currentForegroundPackage.value = pkg
+
+            if (com.princeniithompson.rapcha.config.RapchaConfig.IS_APP_DETECTION_ENABLED) {
+                val a11y = RapchaAccessibilityService.instance
+                val resolved = if (context != null) {
+                    com.princeniithompson.rapcha.util.AppResolutionEngine.defaultInstance.resolve(
+                        context = context,
+                        packageName = pkg,
+                        windowInfo = a11y?.getActiveApplicationWindow(),
+                        rootNode = a11y?.rootInActiveWindow
+                    )
+                } else null
+
+                _currentResolvedAppContext.value = resolved
+                val isAi = resolved?.isAiApp ?: AppClassifier.isAiChatApp(pkg, resolved?.name)
+                _isCurrentAppAi.value = isAi
+
+                // If app is not in local dictionary and context is available, trigger background learning once
+                if (context != null && !pkg.isNullOrBlank() && resolved?.category == "Other") {
+                    backgroundLearningJob?.cancel()
+                    backgroundLearningJob = managerScope.launch {
+                        try {
+                            val evidence = com.princeniithompson.rapcha.util.AppResolutionEngine.defaultInstance.collectEvidence(
+                                context = context,
+                                packageName = pkg,
+                                windowInfo = a11y?.getActiveApplicationWindow(),
+                                rootNode = a11y?.rootInActiveWindow
+                            )
+                            AppDetector.detectAppHybrid(evidence, context)
+                        } catch (_: Exception) {}
+                    }
+                }
+            } else {
+                _currentResolvedAppContext.value = null
+                _isCurrentAppAi.value = false
+            }
+
+        }
+    }
+
+    private val safeModeGate = SafeModeGate(now = { SystemClock.uptimeMillis() })
+    private val safeModeHandler = Handler(Looper.getMainLooper())
+    private var pendingSafeMode: SafeModeClassifier.Verdict? = null
+    private val safeModeConfirm = Runnable { publishPendingSafeMode() }
+
+    /**
+     * Single Safe Mode entry. Package changes and learned categories do not publish on their own.
+     */
+    fun submitSafeMode(verdict: SafeModeClassifier.Verdict) {
+        if (!_isSmartSafeModeEnabled.value) return
+        pendingSafeMode = verdict
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            publishPendingSafeMode()
+        } else {
+            safeModeHandler.post { publishPendingSafeMode() }
+        }
+    }
+
+    /**
+     * Package-level Safe Mode hides the bubble before the stability gate.
+     * A password field on an everyday app still waits, so it cannot flicker.
+     */
+    fun engagePackageImmediately(verdict: SafeModeClassifier.Verdict, pkg: String) {
+        if (!_isSmartSafeModeEnabled.value) return
+        if (!SessionPlacement.holdsImmediately(verdict)) return
+        val previous = _currentForegroundPackage.value
+        noteForegroundPackage(pkg)
+        pendingSafeMode = verdict
+        safeModeHandler.removeCallbacks(safeModeConfirm)
+        if (_isCurrentAppSensitive.value && safeModeGate.published == true) {
+            if (previous != pkg) {
+                AppLogRepository.logEvent(
+                    DiagnosticSource.BUBBLE,
+                    DiagnosticType.SAFE_MODE_ENGAGED,
+                    verdict.describe(pkg)
+                )
+            }
+            return
+        }
+        safeModeGate.notePublished(true)
+        updateSensitivity(true, verdict.describe(pkg))
+    }
+
+    private fun publishPendingSafeMode() {
+        if (!_isSmartSafeModeEnabled.value) return
+        val verdict = pendingSafeMode ?: return
+        if (safeModeGate.published == verdict.sensitive && _isCurrentAppSensitive.value == verdict.sensitive) {
+            safeModeHandler.removeCallbacks(safeModeConfirm)
+            return
+        }
+        val decision = safeModeGate.consider(verdict.sensitive)
+        if (decision == null) {
+            if (safeModeGate.published == verdict.sensitive) {
+                safeModeHandler.removeCallbacks(safeModeConfirm)
+                return
+            }
+            safeModeHandler.removeCallbacks(safeModeConfirm)
+            safeModeHandler.postDelayed(safeModeConfirm, SafeModeGate.STABLE_MS)
+            return
+        }
+        safeModeHandler.removeCallbacks(safeModeConfirm)
+        val logged = if (decision) verdict else SafeModeClassifier.Verdict.notSensitive()
+        updateSensitivity(decision, logged.describe(_currentForegroundPackage.value))
+    }
+
+    fun updateSensitivity(isSensitive: Boolean, triggerReason: String = "") {
+        val wasSensitive = _isCurrentAppSensitive.value
+        _isCurrentAppSensitive.value = isSensitive
+        if (isSensitive && !wasSensitive) {
+            Log.d(TAG, "Smart Safe Mode engaged ($triggerReason)")
+            AppLogRepository.logEvent(
+                DiagnosticSource.BUBBLE,
+                DiagnosticType.SAFE_MODE_ENGAGED,
+                triggerReason
+            )
+            FloatingBubbleService.instance?.onSensitiveAppEntered(_currentForegroundPackage.value)
+        } else if (!isSensitive && wasSensitive) {
+            Log.d(TAG, "Smart Safe Mode exited ($triggerReason)")
+            if (_isKeyboardVisible.value) {
+                bubbleSignalAtElapsed = SystemClock.elapsedRealtime()
+            }
+            AppLogRepository.logEvent(
+                DiagnosticSource.BUBBLE,
+                DiagnosticType.SAFE_MODE_EXITED,
+                triggerReason
+            )
+            FloatingBubbleService.instance?.onSensitiveAppExited()
+        }
+    }
+
+    fun updateLearnedAppContext(appName: String, category: String) {
+        val current = _currentResolvedAppContext.value
+        val isAi = category.equals("AI", ignoreCase = true)
+        val updated = com.princeniithompson.rapcha.util.AppResolutionEngine.AppContext(
+            name = appName.ifBlank { current?.name ?: "App" },
+            category = category,
+            isAiApp = isAi,
+            isLocallyResolved = false
+        )
+        _currentResolvedAppContext.value = updated
+        _isCurrentAppAi.value = isAi
+        Log.d(TAG, "Updated learned app context in bubble: ${updated.formatted}")
+    }
+
+    fun setAiPolishMode(mode: com.princeniithompson.rapcha.service.floating.AiPolishMode) {
+        _selectedAiPolishMode.value = mode
+    }
+
+    /**
+     * Smart Default Heuristic:
+     * - Longer input (>= 12 words or >= 60 chars) or prompt-intent keywords -> OPTIMIZE_PROMPT
+     * - Shorter / conversational follow-up -> CLEAN_MESSAGE
+     */
+    fun updateSmartDefaultPolishMode(transcript: String) {
+        if (transcript.isBlank()) return
+        val wordCount = transcript.trim().split("\\s+".toRegex()).filter { it.isNotBlank() }.size
+        val charCount = transcript.length
+        val lower = transcript.lowercase()
+        val hasTaskIntent = listOf(
+            "build", "create", "write code", "analyze", "draft", "explain", "research",
+            "how to", "generate", "code", "design", "compose", "optimize", "rewrite",
+            "refactor", "develop", "implement", "solve", "compare", "evaluate"
+        ).any { lower.contains(it) }
+
+        if (wordCount >= 12 || charCount >= 60 || hasTaskIntent) {
+            _selectedAiPolishMode.value = com.princeniithompson.rapcha.service.floating.AiPolishMode.OPTIMIZE_PROMPT
+        } else {
+            _selectedAiPolishMode.value = com.princeniithompson.rapcha.service.floating.AiPolishMode.CLEAN_MESSAGE
+        }
+    }
+
+    /**
+     * Locks the detected foreground app + group for the entire duration of the dictation session.
+     * Even if the user switches apps, the locked context remains unchanged until unlockSessionContext() is called.
+     */
+    fun lockSessionContext(context: Context) {
+        if (!com.princeniithompson.rapcha.config.RapchaConfig.IS_APP_DETECTION_ENABLED) {
+            _lockedSessionContext.value = null
+            _currentResolvedAppContext.value = null
+            _isCurrentAppAi.value = false
+            return
+        }
+        _lockedSessionContext.value = "Detecting..."
+        _currentResolvedAppContext.value = null
+        _isCurrentAppAi.value = false
+    }
+
+    fun setLockedSessionContext(value: String?) {
+        _lockedSessionContext.value = value
+    }
+
+    /**
+     * Releases the session lock when the dictation session completes, is cancelled, or is dismissed.
+     */
+    fun unlockSessionContext() {
+        _lockedSessionContext.value = null
+        Log.d(TAG, "Unlocked session context")
+    }
+
+    /**
+     * Injects text into the focused field. Copies to the clipboard only when no focused
+     * editable field exists.
+     */
+    suspend fun injectOrFallbackToClipboard(context: Context, text: String): Boolean {
+        return com.princeniithompson.rapcha.service.floating.FloatingTextInjector.injectOrFallbackToClipboard(context, text)
+    }
+}
